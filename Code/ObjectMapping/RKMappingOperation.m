@@ -418,7 +418,6 @@ NSArray *RKApplyNestingAttributeValueToMappings(NSString *attributeName, id valu
     NSAssert(anObject, @"Cannot map nested object without a nested source object");
     NSAssert(anotherObject, @"Cannot map nested object without a destination object");
     NSAssert(relationshipMapping, @"Cannot map a nested object relationship without a relationship mapping");
-    NSError *error = nil;
 
     RKLogTrace(@"Performing nested object mapping using mapping %@ for data: %@", relationshipMapping, anObject);
     RKMappingOperation *subOperation = [[RKMappingOperation alloc] initWithSourceObject:anObject destinationObject:anotherObject mapping:relationshipMapping.mapping];
@@ -427,7 +426,7 @@ NSArray *RKApplyNestingAttributeValueToMappings(NSString *attributeName, id valu
     [subOperation start];
     
     if (subOperation.error) {
-        RKLogWarning(@"WARNING: Failed mapping nested object: %@", [error localizedDescription]);
+        RKLogWarning(@"WARNING: Failed mapping nested object: %@", [subOperation.error localizedDescription]);
     }
 
     return YES;
