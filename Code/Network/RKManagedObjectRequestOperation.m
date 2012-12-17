@@ -25,9 +25,71 @@
 #import "RKRequestOperationSubclass.h"
 #import "NSManagedObjectContext+RKAdditions.h"
 
+// Graph visitor
+#import "RKResponseDescriptor.h"
+#import "RKEntityMapping.h"
+#import "RKDynamicMapping.h"
+#import "RKRelationshipMapping.h"
+
 // Set Logging Component
 #undef RKLogComponent
 #define RKLogComponent RKlcl_cRestKitCoreData
+
+@interface RKNestedManagedObjectKeyPathMappingGraphVisitor : NSObject
+
+@property (nonatomic, readonly) NSSet *keyPaths;
+
+- (id)initWithResponseDescriptors:(NSArray *)responseDescriptors;
+
+@end
+
+@interface RKNestedManagedObjectKeyPathMappingGraphVisitor ()
+@property (nonatomic, strong) NSMutableSet *mutableKeyPaths;
+@end
+
+@implementation RKNestedManagedObjectKeyPathMappingGraphVisitor
+
+- (id)initWithResponseDescriptors:(NSArray *)responseDescriptors
+{
+    self = [self init];
+    if (self) {
+        self.mutableKeyPaths = [NSMutableSet set];
+        for (RKResponseDescriptor *responseDescriptor in responseDescriptors) {
+            [self visitMapping:responseDescriptor.mapping atKeyPath:responseDescriptor.keyPath];
+        }
+    }
+    return self;
+}
+
+- (NSSet *)keyPaths
+{
+    return self.mutableKeyPaths;
+}
+
+- (void)visitMapping:(RKMapping *)mapping atKeyPath:(NSString *)keyPath
+{
+    id actualKeyPath = keyPath ?: [NSNull null];
+    if ([self.keyPaths containsObject:actualKeyPath]) return;
+    
+    if ([mapping isKindOfClass:[RKEntityMapping class]]) {
+        [self.mutableKeyPaths addObject:actualKeyPath];
+    } else {
+        if ([mapping isKindOfClass:[RKDynamicMapping class]]) {
+            RKDynamicMapping *dynamicMapping = (RKDynamicMapping *)mapping;
+            for (RKMapping *nestedMapping in dynamicMapping.objectMappings) {
+                [self visitMapping:nestedMapping atKeyPath:keyPath];
+            }
+        } else if ([mapping isKindOfClass:[RKObjectMapping class]]) {
+            RKObjectMapping *objectMapping = (RKObjectMapping *)mapping;
+            for (RKRelationshipMapping *relationshipMapping in objectMapping.relationshipMappings) {
+                NSString *nestedKeyPath = keyPath ? [@[ keyPath, relationshipMapping.destinationKeyPath ] componentsJoinedByString:@"."] : relationshipMapping.destinationKeyPath;
+                [self visitMapping:relationshipMapping.mapping atKeyPath:nestedKeyPath];
+            }
+        }
+    }
+}
+
+@end
 
 NSArray *RKArrayOfFetchRequestFromBlocksWithURL(NSArray *fetchRequestBlocks, NSURL *URL)
 {
@@ -40,30 +102,79 @@ NSArray *RKArrayOfFetchRequestFromBlocksWithURL(NSArray *fetchRequestBlocks, NSU
     return fetchRequests;
 }
 
-static NSDictionary *RKDictionaryOfManagedObjectsInContextFromDictionaryOfManagedObjects(NSDictionary *dictionaryOfManagedObjects, NSManagedObjectContext *managedObjectContext)
+// When we map the root object, it is returned under the key `[NSNull null]`
+static id RKMappedValueForKeyPathInDictionary(NSString *keyPath, NSDictionary *dictionary)
 {
-    NSMutableDictionary *newDictionary = [[NSMutableDictionary alloc] initWithCapacity:[dictionaryOfManagedObjects count]];
+    return ([keyPath isEqual:[NSNull null]]) ? [dictionary objectForKey:[NSNull null]] : [dictionary valueForKeyPath:keyPath];
+}
+
+static void RKSetMappedValueForKeyPathInDictionary(id value, NSString *keyPath, NSMutableDictionary *dictionary)
+{
+    [keyPath isEqual:[NSNull null]] ? [dictionary setObject:value forKey:keyPath] : [dictionary setValue:value forKeyPath:keyPath];
+}
+
+// Finds the key paths for all entity mappings in the graph whose parent objects are not other managed objects
+static NSDictionary *RKDictionaryFromDictionaryWithManagedObjectsAtKeyPathsRefetchedInContext(NSDictionary *dictionaryOfManagedObjects, NSSet *keyPaths, NSManagedObjectContext *managedObjectContext)
+{
+    if (! [dictionaryOfManagedObjects count]) return dictionaryOfManagedObjects;    
+    NSMutableDictionary *newDictionary = [dictionaryOfManagedObjects mutableCopy];
     [managedObjectContext performBlockAndWait:^{
-        NSError *error = nil;
-        for (NSString *key in dictionaryOfManagedObjects) {
-            id value = dictionaryOfManagedObjects[key];
-            if ([value isKindOfClass:[NSArray class]]) {
+        __block NSError *error = nil;
+        
+        for (NSString *keyPath in keyPaths) {
+            id value = RKMappedValueForKeyPathInDictionary(keyPath, dictionaryOfManagedObjects);
+            if (! value) {
+                continue;
+            } else if ([value isKindOfClass:[NSArray class]]) {
+                BOOL isMutable = [value isKindOfClass:[NSMutableArray class]];
                 NSMutableArray *newValue = [[NSMutableArray alloc] initWithCapacity:[value count]];
                 for (__strong id object in value) {
                     if ([object isKindOfClass:[NSManagedObject class]]) {
+                        if (![object managedObjectContext]) continue; // Object was deleted
                         object = [managedObjectContext existingObjectWithID:[object objectID] error:&error];
                         NSCAssert(object, @"Failed to find existing object with ID %@ in context %@: %@", [object objectID], managedObjectContext, error);
                     }
                     
                     [newValue addObject:object];
                 }
-                value = [newValue copy];
+                value = (isMutable) ? newValue : [newValue copy];
+            } else if ([value isKindOfClass:[NSSet class]]) {
+                BOOL isMutable = [value isKindOfClass:[NSMutableSet class]];
+                NSMutableSet *newValue = [[NSMutableSet alloc] initWithCapacity:[value count]];
+                for (__strong id object in value) {
+                    if ([object isKindOfClass:[NSManagedObject class]]) {
+                        if (![object managedObjectContext]) continue; // Object was deleted
+                        object = [managedObjectContext existingObjectWithID:[object objectID] error:&error];
+                        NSCAssert(object, @"Failed to find existing object with ID %@ in context %@: %@", [object objectID], managedObjectContext, error);
+                    }
+                    
+                    [newValue addObject:object];
+                }
+                value = (isMutable) ? newValue : [newValue copy];
+            } else if ([value isKindOfClass:[NSOrderedSet class]]) {
+                BOOL isMutable = [value isKindOfClass:[NSMutableOrderedSet class]];
+                NSMutableOrderedSet *newValue = [NSMutableOrderedSet orderedSet];
+                [(NSOrderedSet *)value enumerateObjectsUsingBlock:^(id object, NSUInteger index, BOOL *stop) {
+                    if ([object isKindOfClass:[NSManagedObject class]]) {
+                        if ([object managedObjectContext]) {
+                            object = [managedObjectContext existingObjectWithID:[object objectID] error:&error];
+                            NSCAssert(object, @"Failed to find existing object with ID %@ in context %@: %@", [object objectID], managedObjectContext, error);
+                        } else {
+                            // Object was deleted
+                            object = nil;
+                        }
+                    }
+                    
+                    if (object) [newValue setObject:object atIndex:index];
+                }];
+                value = (isMutable) ? newValue : [newValue copy];
             } else if ([value isKindOfClass:[NSManagedObject class]]) {
-                value = [managedObjectContext existingObjectWithID:[value objectID] error:&error];
+                // Object becomes nil if deleted
+                value = [value managedObjectContext] ? [managedObjectContext existingObjectWithID:[value objectID] error:&error] : nil;
                 NSCAssert(value, @"Failed to find existing object with ID %@ in context %@: %@", [value objectID], managedObjectContext, error);
             }
             
-            [newDictionary setValue:value forKey:key];
+            RKSetMappedValueForKeyPathInDictionary(value, keyPath, newDictionary);
         }
     }];
     
@@ -242,23 +353,48 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
     return localObjects;
 }
 
-- (BOOL)deleteLocalObjectsMissingFromMappingResult:(RKMappingResult *)result error:(NSError **)error
+- (BOOL)deleteLocalObjectsMissingFromMappingResult:(RKMappingResult *)result atKeyPaths:(NSSet *)keyPaths error:(NSError **)error
 {
     if (! self.deletesOrphanedObjects) {
-        RKLogDebug(@"Skipping deletion of orphaned objects: deletesOrphanedObjects=NO");
+        RKLogDebug(@"Skipping deletion of orphaned objects: disabled as deletesOrphanedObjects=NO");
         return YES;
     }
 
     if (! [[self.HTTPRequestOperation.request.HTTPMethod uppercaseString] isEqualToString:@"GET"]) {
-        RKLogDebug(@"Skipping cleanup of objects via managed object cache: only used for GET requests.");
+        RKLogDebug(@"Skipping deletion of orphaned objects: only performed for GET requests.");
+        return YES;
+    }
+    
+    if (self.HTTPRequestOperation.wasNotModified) {
+        RKLogDebug(@"Skipping deletion of orphaned objects: 304 (Not Modified) status code encountered");
         return YES;
     }
 
-    NSArray *results = [result array];
+    // Build an aggregate collection of all the managed objects in the mapping result
+    NSMutableSet *managedObjectsInMappingResult = [NSMutableSet set];
+    NSDictionary *mappingResultDictionary = result.dictionary;
+    for (NSString *keyPath in keyPaths) {
+        id managedObjects = RKMappedValueForKeyPathInDictionary(keyPath, mappingResultDictionary);
+        if (! managedObjects) {
+            continue;
+        } else if ([managedObjects isKindOfClass:[NSManagedObject class]]) {
+            [managedObjectsInMappingResult addObject:managedObjects];
+        } else if ([managedObjects isKindOfClass:[NSSet class]]) {
+            [managedObjectsInMappingResult unionSet:managedObjects];
+        } else if ([managedObjects isKindOfClass:[NSArray class]]) {
+            [managedObjectsInMappingResult addObjectsFromArray:managedObjects];
+        } else if ([managedObjects isKindOfClass:[NSOrderedSet class]]) {
+            [managedObjectsInMappingResult addObjectsFromArray:[managedObjects array]];
+        } else {
+            [NSException raise:NSInternalInconsistencyException format:@"Unexpected object type '%@' encountered at keyPath '%@': Expected an `NSManagedObject`, `NSArray`, or `NSSet`.", [managedObjects class], keyPath];
+        }
+    }
+
     NSSet *localObjects = [self localObjectsFromFetchRequestsMatchingRequestURL:error];
     if (! localObjects) return NO;
+    RKLogDebug(@"Checking mappings result of %ld objects for %ld potentially orphaned local objects...", (long) [managedObjectsInMappingResult count], (long) [localObjects count]);
     for (id object in localObjects) {
-        if (NO == [results containsObject:object]) {
+        if (NO == [managedObjectsInMappingResult containsObject:object]) {
             RKLogDebug(@"Deleting orphaned object %@: not found in result set and expected at this URL", object);
             [self.privateContext performBlockAndWait:^{
                 [self.privateContext deleteObject:object];
@@ -319,6 +455,10 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
     BOOL success;
     NSError *error = nil;
 
+    // Construct a set of key paths to all of the managed objects in the mapping result
+    RKNestedManagedObjectKeyPathMappingGraphVisitor *visitor = [[RKNestedManagedObjectKeyPathMappingGraphVisitor alloc] initWithResponseDescriptors:self.responseDescriptors];
+    NSSet *managedObjectMappingResultKeyPaths = visitor.keyPaths;
+
     // Handle any cleanup
     success = [self deleteTargetObjectIfAppropriate:&error];
     if (! success) {
@@ -326,7 +466,7 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
         return;
     }
 
-    success = [self deleteLocalObjectsMissingFromMappingResult:self.mappingResult error:&error];
+    success = [self deleteLocalObjectsMissingFromMappingResult:self.mappingResult atKeyPaths:managedObjectMappingResultKeyPaths error:&error];
     if (! success) {
         self.error = error;
         return;
@@ -341,9 +481,11 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
     success = [self saveContext:&error];
     if (! success) self.error = error;
     
-    // Refetch the mapping results from the externally configured context
-    NSDictionary *resultsDictionaryFromOriginalContext = RKDictionaryOfManagedObjectsInContextFromDictionaryOfManagedObjects([self.mappingResult dictionary], self.managedObjectContext);
-    self.mappingResult = [[RKMappingResult alloc] initWithDictionary:resultsDictionaryFromOriginalContext];
+    // Refetch all managed objects nested at key paths within the results dictionary before returning
+    if (self.mappingResult) {
+        NSDictionary *resultsDictionaryFromOriginalContext = RKDictionaryFromDictionaryWithManagedObjectsAtKeyPathsRefetchedInContext([self.mappingResult dictionary], managedObjectMappingResultKeyPaths, self.managedObjectContext);
+        self.mappingResult = [[RKMappingResult alloc] initWithDictionary:resultsDictionaryFromOriginalContext];
+    }
 }
 
 @end

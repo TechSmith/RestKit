@@ -43,7 +43,7 @@ static NSDictionary *RKConnectionAttributeValuesWithObject(RKConnectionDescripti
     NSCAssert([connection isForeignKeyConnection], @"Only valid for a foreign key connection");
     NSMutableDictionary *destinationEntityAttributeValues = [NSMutableDictionary dictionaryWithCapacity:[connection.attributes count]];
     for (NSString *sourceAttribute in connection.attributes) {
-        NSString *destinationAttribute = connection.attributes[sourceAttribute];
+        NSString *destinationAttribute = [connection.attributes objectForKey:sourceAttribute];
         id sourceValue = [managedObject valueForKey:sourceAttribute];
         [destinationEntityAttributeValues setValue:sourceValue forKey:destinationAttribute];
     }
@@ -56,6 +56,7 @@ static NSDictionary *RKConnectionAttributeValuesWithObject(RKConnectionDescripti
 @property (nonatomic, strong, readwrite) id<RKManagedObjectCaching> managedObjectCache;
 @property (nonatomic, strong, readwrite) NSError *error;
 @property (nonatomic, strong, readwrite) id connectedValue;
+@property (nonatomic, copy) void (^connectionBlock)(RKRelationshipConnectionOperation *operation, id connectedValue);
 
 // Helpers
 @property (weak, nonatomic, readonly) NSManagedObjectContext *managedObjectContext;
@@ -163,21 +164,17 @@ static NSDictionary *RKConnectionAttributeValuesWithObject(RKConnectionDescripti
     return [self relationshipValueWithConnectionResult:connectionResult];
 }
 
-- (void)connectRelationship
+- (void)main
 {
+    if (self.isCancelled) return;
     NSString *relationshipName = self.connection.relationship.name;
     RKLogTrace(@"Connecting relationship '%@' with mapping: %@", relationshipName, self.connection);
     [self.managedObjectContext performBlockAndWait:^{
         self.connectedValue = [self findConnected];
         [self.managedObject setValue:self.connectedValue forKeyPath:relationshipName];
         RKLogDebug(@"Connected relationship '%@' to object '%@'", relationshipName, self.connectedValue);
+        if (self.connectionBlock) self.connectionBlock(self, self.connectedValue);
     }];
-}
-
-- (void)main
-{
-    if (self.isCancelled) return;
-    [self connectRelationship];
 }
 
 - (NSString *)description

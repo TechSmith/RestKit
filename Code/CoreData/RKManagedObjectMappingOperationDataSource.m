@@ -154,7 +154,7 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
     NSDictionary *entityIdentifierAttributes = RKEntityIdentificationAttributesForEntityMappingWithRepresentation(entityMapping, representation);
     if (! self.managedObjectCache) {
         RKLogWarning(@"Performing managed object mapping with a nil managed object cache:\n"
-                      "Unable to update existing object instances by primary key. Duplicate objects may be created.");
+                      "Unable to update existing object instances by identification attributes. Duplicate objects may be created.");
     }
 
     // If we have found the entity identifier attributes, try to find an existing instance to update
@@ -218,14 +218,13 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
 
         for (RKConnectionDescription *connection in connections) {
             RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:mappingOperation.destinationObject connection:connection managedObjectCache:self.managedObjectCache];
-            __weak RKRelationshipConnectionOperation *weakOperation = operation;
-            [operation setCompletionBlock:^{
-                if (weakOperation.connectedValue) {
-                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didConnectRelationship:withValue:usingMapping:)]) {
-                        [mappingOperation.delegate mappingOperation:mappingOperation didConnectRelationship:connection.relationship toValue:weakOperation.connectedValue usingConnection:connection];
+            [operation setConnectionBlock:^(RKRelationshipConnectionOperation *operation, id connectedValue) {
+                if (connectedValue) {
+                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didConnectRelationship:toValue:usingConnection:)]) {
+                        [mappingOperation.delegate mappingOperation:mappingOperation didConnectRelationship:connection.relationship toValue:connectedValue usingConnection:connection];
                     }
                 } else {
-                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didFailToConnectRelationship:usingMapping:)]) {
+                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didFailToConnectRelationship:usingConnection:)]) {
                         [mappingOperation.delegate mappingOperation:mappingOperation didFailToConnectRelationship:connection.relationship usingConnection:connection];
                     }
                 }
