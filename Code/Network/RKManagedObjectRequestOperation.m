@@ -82,8 +82,8 @@
     NSValue *dictionaryKey = [NSValue valueWithNonretainedObject:mapping];
     if ([self.lowValues objectForKey:dictionaryKey]) {
         // This key path points to a cycle back into the graph
-        if ([mapping isKindOfClass:[RKEntityMapping class]]) [self.mutableKeyPaths addObject:keyPath];
-        return;
+       if ([mapping isKindOfClass:[RKEntityMapping class]]) [self.mutableKeyPaths addObject:keyPath ?: [NSNull null]];
+       return;
     }
     
     NSNumber *lowValue = @([self.lowValues count]);
