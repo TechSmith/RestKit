@@ -45,8 +45,7 @@ static RKManagedObjectStore *defaultStore = nil;
 
 @implementation RKManagedObjectStore
 
-
-+ (RKManagedObjectStore *)defaultStore
++ (instancetype)defaultStore
 {
     return defaultStore;
 }
@@ -58,7 +57,7 @@ static RKManagedObjectStore *defaultStore = nil;
     }
 }
 
-- (id)initWithManagedObjectModel:(NSManagedObjectModel *)managedObjectModel
+- (instancetype)initWithManagedObjectModel:(NSManagedObjectModel *)managedObjectModel
 {
     self = [super init];
     if (self) {
@@ -74,7 +73,7 @@ static RKManagedObjectStore *defaultStore = nil;
     return self;
 }
 
-- (id)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)persistentStoreCoordinator
+- (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)persistentStoreCoordinator
 {
     self = [self initWithManagedObjectModel:persistentStoreCoordinator.managedObjectModel];
     if (self) {
@@ -125,7 +124,7 @@ static RKManagedObjectStore *defaultStore = nil;
     NSDictionary *options = nil;
     if (nilOrOptions) {
         NSMutableDictionary *mutableOptions = [nilOrOptions mutableCopy];
-        mutableOptions[RKSQLitePersistentStoreSeedDatabasePathOption] = seedPath ?: [NSNull null];
+        [mutableOptions setObject:(seedPath ?: [NSNull null]) forKey:RKSQLitePersistentStoreSeedDatabasePathOption];
         options = mutableOptions;
     } else {
         options = @{ RKSQLitePersistentStoreSeedDatabasePathOption: (seedPath ?: [NSNull null]),
@@ -212,6 +211,9 @@ static RKManagedObjectStore *defaultStore = nil;
 
 - (BOOL)resetPersistentStores:(NSError **)error
 {
+    [self.mainQueueManagedObjectContext reset];
+    [self.persistentStoreManagedObjectContext reset];
+    
     NSError *localError;
     for (NSPersistentStore *persistentStore in self.persistentStoreCoordinator.persistentStores) {
         NSURL *URL = [self.persistentStoreCoordinator URLForPersistentStore:persistentStore];
@@ -222,6 +224,22 @@ static RKManagedObjectStore *defaultStore = nil;
                     RKLogError(@"Failed to remove persistent store at URL %@: %@", URL, localError);
                     if (error) *error = localError;
                     return NO;
+                }
+                
+                // Check for and remove an external storage directory
+                NSString *supportDirectoryName = [NSString stringWithFormat:@".%@_SUPPORT", [[URL lastPathComponent] stringByDeletingPathExtension]];
+                NSURL *supportDirectoryFileURL = [NSURL URLWithString:supportDirectoryName relativeToURL:[URL URLByDeletingLastPathComponent]];
+                BOOL isDirectory = NO;
+                if ([[NSFileManager defaultManager] fileExistsAtPath:[supportDirectoryFileURL path] isDirectory:&isDirectory]) {
+                    if (isDirectory) {
+                        if (! [[NSFileManager defaultManager] removeItemAtURL:supportDirectoryFileURL error:&localError]) {
+                            RKLogError(@"Failed to remove persistent store Support directory at URL %@: %@", supportDirectoryFileURL, localError);
+                            if (error) *error = localError;
+                            return NO;
+                        }
+                    } else {
+                        RKLogWarning(@"Found external support item for store at path that is not a directory: %@", [supportDirectoryFileURL path]);
+                    }
                 }
             } else {
                 RKLogDebug(@"Skipped removal of persistent store file: URL for persistent store is not a file URL. (%@)", URL);

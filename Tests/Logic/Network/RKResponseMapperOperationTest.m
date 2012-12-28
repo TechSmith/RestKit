@@ -10,8 +10,23 @@
 #import "RKResponseMapperOperation.h"
 #import "RKErrorMessage.h"
 #import "RKMappingErrors.h"
+#import "RKTestUser.h"
 
 NSString *RKPathAndQueryStringFromURLRelativeToURL(NSURL *URL, NSURL *baseURL);
+
+@interface RKServerError : NSObject
+@property (nonatomic, copy) NSString *message;
+@property (nonatomic, assign) NSInteger code;
+@end
+
+@implementation RKServerError
+
+- (NSString *)description
+{
+    return [NSString stringWithFormat:@"%@ (%ld)", self.message, (long) self.code];
+}
+
+@end
 
 @interface RKObjectResponseMapperOperationTest : RKTestCase
 
@@ -42,6 +57,18 @@ NSString *RKPathAndQueryStringFromURLRelativeToURL(NSURL *URL, NSURL *baseURL);
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:URL statusCode:200 HTTPVersion:@"1.1" headerFields:nil];
     NSData *data = [@"" dataUsingEncoding:NSUTF8StringEncoding];
     RKObjectResponseMapperOperation *mapper = [[RKObjectResponseMapperOperation alloc] initWithResponse:response data:data responseDescriptors:@[responseDescriptor]];
+    mapper.treatsEmptyResponseAsSuccess = YES;
+    [mapper start];
+    expect(mapper.error).to.beNil();
+}
+
+- (void)testMappingANilDataIsSucessful
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    RKResponseDescriptor *responseDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:mapping pathPattern:nil keyPath:nil statusCodes:[NSIndexSet indexSetWithIndex:200]];
+    NSURL *URL = [NSURL URLWithString:@"http://restkit.org"];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:URL statusCode:200 HTTPVersion:@"1.1" headerFields:nil];
+    RKObjectResponseMapperOperation *mapper = [[RKObjectResponseMapperOperation alloc] initWithResponse:response data:nil responseDescriptors:@[responseDescriptor]];
     mapper.treatsEmptyResponseAsSuccess = YES;
     [mapper start];
     expect(mapper.error).to.beNil();
@@ -106,6 +133,21 @@ NSString *RKPathAndQueryStringFromURLRelativeToURL(NSURL *URL, NSURL *baseURL);
     expect(mapper.error).notTo.beNil();
     expect(mapper.error.code).to.equal(NSURLErrorBadServerResponse);
     expect([mapper.error localizedDescription]).to.equal(@"Loaded an unprocessable client error response (422)");
+}
+
+- (void)testMappingServerErrorToCustomErrorClass
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[RKServerError class]];
+    [mapping addAttributeMappingsFromArray:@[ @"code", @"message" ]];
+    RKResponseDescriptor *responseDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:mapping pathPattern:nil keyPath:nil statusCodes:[NSIndexSet indexSetWithIndex:422]];
+    NSURL *URL = [NSURL URLWithString:@"http://restkit.org"];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:URL statusCode:422 HTTPVersion:@"1.1" headerFields:@{@"Content-Type": @"application/json"}];
+    NSData *data = [@"{\"code\": 12345, \"message\": \"This is the error message\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    RKObjectResponseMapperOperation *mapper = [[RKObjectResponseMapperOperation alloc] initWithResponse:response data:data responseDescriptors:@[responseDescriptor]];
+    [mapper start];
+    expect(mapper.error).notTo.beNil();
+    expect(mapper.error.code).to.equal(RKMappingErrorFromMappingResult);
+    expect([mapper.error localizedDescription]).to.equal(@"This is the error message (12345)");
 }
 
 #pragma mark - Response Descriptor Matching
@@ -198,6 +240,57 @@ NSString *RKPathAndQueryStringFromURLRelativeToURL(NSURL *URL, NSURL *baseURL);
 
     NSDictionary *expectedMappingsDictionary = @{ [NSNull null] : mapping };
     expect(mapper.responseMappingsDictionary).to.equal(expectedMappingsDictionary);
+}
+
+- (void)testThatResponseDescriptorMismatchesIncludeHelpfulError
+{
+    NSURL *responseURL = [NSURL URLWithString:@"http://restkit.org/api/v1/users"];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:responseURL statusCode:200 HTTPVersion:@"1.1" headerFields:@{@"Content-Type": @"application/json"}];
+    NSData *data = [@"{\"some\": \"Data\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    NSURL *baseURL =  [NSURL URLWithString:@"http://restkit.org/api/v1/"];
+    
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    RKResponseDescriptor *responseDescriptor1 = [RKResponseDescriptor responseDescriptorWithMapping:mapping pathPattern:@"/users" keyPath:@"this" statusCodes:[NSIndexSet indexSetWithIndex:200]];
+    responseDescriptor1.baseURL = baseURL;
+    RKResponseDescriptor *responseDescriptor2 = [RKResponseDescriptor responseDescriptorWithMapping:mapping pathPattern:@"/users" keyPath:@"that" statusCodes:[NSIndexSet indexSetWithIndex:200]];
+    responseDescriptor2.baseURL = [NSURL URLWithString:@"http://google.com"];
+    RKResponseDescriptor *responseDescriptor3 = [RKResponseDescriptor responseDescriptorWithMapping:mapping pathPattern:@"users" keyPath:@"that" statusCodes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(202, 5)]];
+    responseDescriptor3.baseURL = baseURL;
+    
+    RKObjectResponseMapperOperation *mapper = [[RKObjectResponseMapperOperation alloc] initWithResponse:response data:data responseDescriptors:@[ responseDescriptor1, responseDescriptor2, responseDescriptor3 ]];
+    [mapper start];
+    expect(mapper.error).notTo.beNil();
+    expect([mapper.error code]).to.equal(RKMappingErrorNotFound);
+    NSString *failureReason = [[mapper.error userInfo] valueForKey:NSLocalizedFailureReasonErrorKey];
+    assertThat(failureReason, containsString(@"A 200 response was loaded from the URL 'http://restkit.org/api/v1/users', which failed to match all (3) response descriptors"));
+    assertThat(failureReason, containsString(@"failed to match: response path 'users' did not match the path pattern '/users'."));
+    assertThat(failureReason, containsString(@"failed to match: response URL 'http://restkit.org/api/v1/users' is not relative to the baseURL 'http://google.com'."));
+    assertThat(failureReason, containsString(@"failed to match: response status code 200 is not within the range 202-206"));
+    
+    NSDictionary *expectedMappingsDictionary = @{};
+    expect(mapper.responseMappingsDictionary).to.equal(expectedMappingsDictionary);
+}
+
+#pragma mark -
+
+- (void)testThatObjectResponseMapperOperationDoesNotMapWithTargetObjectForUnsuccessfulResponseStatusCode
+{
+    NSURL *responseURL = [NSURL URLWithString:@"http://restkit.org/api/v1/users"];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:responseURL statusCode:422 HTTPVersion:@"1.1" headerFields:@{@"Content-Type": @"application/json"}];
+    NSData *data = [@"{\"name\": \"Blake\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    
+    RKTestUser *testUser = [RKTestUser new];
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
+    [mapping addAttributeMappingsFromArray:@[ @"name" ]];
+    RKResponseDescriptor *responseDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:mapping pathPattern:nil keyPath:nil statusCodes:[NSIndexSet indexSetWithIndex:200]];
+    RKObjectMapping *errorMapping = [RKObjectMapping mappingForClass:[RKErrorMessage class]];
+    RKResponseDescriptor *errorDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:errorMapping pathPattern:nil keyPath:nil statusCodes:[NSIndexSet indexSetWithIndex:422]];
+    
+    RKObjectResponseMapperOperation *mapper = [[RKObjectResponseMapperOperation alloc] initWithResponse:response data:data responseDescriptors:@[ responseDescriptor, errorDescriptor ]];
+    mapper.targetObject = testUser;
+    [mapper start];
+    expect(mapper.error).notTo.beNil();
+    expect([mapper.error code]).notTo.equal(RKMappingErrorTypeMismatch);
 }
 
 @end

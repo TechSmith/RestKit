@@ -29,6 +29,10 @@
  */
 @protocol RKMappingOperationDelegate  <NSObject>
 
+///---------------------------------------
+/// @name Tracking Property Mapping Events
+///---------------------------------------
+
 @optional
 
 /**
@@ -78,6 +82,10 @@
  */
 - (void)mappingOperation:(RKMappingOperation *)operation didFailWithError:(NSError *)error;
 
+///-----------------------------------------
+/// @name Tracking Dynamic Mapping Selection
+///-----------------------------------------
+
 /**
  Tells the delegate that the mapping operation has selected a concrete object mapping with which to map the source object.
 
@@ -90,6 +98,10 @@
 - (void)mappingOperation:(RKMappingOperation *)operation didSelectObjectMapping:(RKObjectMapping *)objectMapping forDynamicMapping:(RKDynamicMapping *)dynamicMapping;
 
 #ifdef _COREDATADEFINES_H
+
+///----------------------------------------
+/// @name Tracking Relationship Connections
+///----------------------------------------
 
 /**
  Tells the delegate that the mapping operation has connected a relationship.
@@ -135,7 +147,7 @@
  @param objectOrDynamicMapping An instance of `RKObjectMapping` or `RKDynamicMapping` defining how the mapping is to be performed.
  @return The receiver, initialized with a source object, a destination object, and a mapping.
  */
-- (id)initWithSourceObject:(id)sourceObject destinationObject:(id)destinationObject mapping:(RKMapping *)objectOrDynamicMapping;
+- (instancetype)initWithSourceObject:(id)sourceObject destinationObject:(id)destinationObject mapping:(RKMapping *)objectOrDynamicMapping;
 
 ///--------------------------------------
 /// @name Accessing Mapping Configuration

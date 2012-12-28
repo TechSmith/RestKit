@@ -36,9 +36,21 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  Object request operations model the lifecycle of an object mapped HTTP request from start to finish. They are initialized with a fully configured `NSURLRequest` object and a set of `RKResponseDescriptor` objects that specify how an HTTP response is to be mapped into local domain objects. Object request operations may be constructed as standalone objects, but are often constructed through an `RKObjectManager` object. The object request operation encapsulates the functionality of two underlying operations that perform the bulk of the work. The HTTP request and response loading is handled by an `RKHTTPRequestOperation`, which is responsible for the HTTP transport details. Once a response has been successfully loaded, the object request operation starts an `RKResponseMapperOperation` that is responsible for handling the mapping of the response body. When working with Core Data, the `RKManagedObjectRequestOperation` class is used. The object manager encapsulates the Core Data configuration details and provides an interface that will return the appropriate object request operation for a request through the `appropriateObjectRequestOperationWithObject:method:path:parameters:` method.
  
- ## The Base URL and Path Patterns
+ ## Base URL, Relative Paths and Path Patterns
  
  Each object manager is configured with a base URL that defines the URL that all request sent through the manager will be relative to. The base URL is configured directly through the `managerWithBaseURL:` method or is inherited from an AFNetworking `AFHTTPClient` object if the manager is initialized via the `initWithHTTPClient:` method. The base URL can point directly at the root of a URL or may include a path.
+ 
+ Many of the methods of the object manager accept a path argument, either directly or in the form of a path pattern. Whenever a path is provided to the object manager directly, as part of a request or response descriptor (see "Request and Response Descriptors"), or via a route (see the "Routing" section), the path is used to construct an `NSURL` object with `[NSURL URLWithString:relativeToURL:]`. The rules for the evaluation of a relative URL can at times be surprising and many configuration errors result from incorrectly configuring the `baseURL` and relative paths thereof. For reference, here are some examples borrowed from the AFNetworking documentation detailing how base URL's and relative paths interact:
+ 
+     NSURL *baseURL = [NSURL URLWithString:@"http://example.com/v1/"];
+     [NSURL URLWithString:@"foo" relativeToURL:baseURL];                  // http://example.com/v1/foo
+     [NSURL URLWithString:@"foo?bar=baz" relativeToURL:baseURL];          // http://example.com/v1/foo?bar=baz
+     [NSURL URLWithString:@"/foo" relativeToURL:baseURL];                 // http://example.com/foo
+     [NSURL URLWithString:@"foo/" relativeToURL:baseURL];                 // http://example.com/v1/foo
+     [NSURL URLWithString:@"/foo/" relativeToURL:baseURL];                // http://example.com/foo/
+     [NSURL URLWithString:@"http://example2.com/" relativeToURL:baseURL]; // http://example2.com/
+ 
+ Keep these rules in mind when providing relative paths to the object manager.
  
  Path patterns are a common unit of abstraction in RestKit for describing the path portion of URL's. When working with API's, there is typically one or more dynamic portions of the URL that correspond to primary keys or other identifying resource attributes. For example, a blogging application may represent articles in a URL structure such as '/articles/1234' and comments about an article might appear at '/articles/1234/comments'. These path structures could be represented as the path patterns '/articles/:articleID' and '/articles/:articleID/comments', substituing the dynamic key ':articleID' in place of the primary key of in the path. These keys can be used to interpolate a path with an object's property values using key-value coding or be used to match a string.
  
@@ -73,7 +85,11 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  Once a path pattern has been registered via the routing system, the manager can automatically build full request URL's when given nothing but the object to be sent.
  
- The second use case of path patterns is in the matching of path into a dictionary of attributes. In this case, the path pattern is evaluatd against a string and used to construct an `NSDictionary` object containing the matched key paths, optionally including the values of a query string. This functionality is provided via the `RKPathMatcher` class and is discussed in detail in the accompanying documentation.  
+ The second use case of path patterns is in the matching of path into a dictionary of attributes. In this case, the path pattern is evaluatd against a string and used to construct an `NSDictionary` object containing the matched key paths, optionally including the values of a query string. This functionality is provided via the `RKPathMatcher` class and is discussed in detail in the accompanying documentation.
+ 
+ ### Escaping Path Patterns
+ 
+ Note that path patterns will by default interpret anything prefixed with a period that follows a dynamic path segment as a key path. This can cause an issue if you have a dynamic path segment that is followed by a file extension. For example, a path pattern of '/categories/:categoryID.json' would be erroneously interpretted as containing a dynamic path segment whose value is interpolated from the 'categoryID.json' key path. This key path evaluation behavior can be suppressed by escaping the period preceding the non-dynamic part of the pattern with two leading slashes, as in '/categories/:categoryID\\.json'.
  
  ## Request and Response Descriptors
  
@@ -215,7 +231,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  @return The shared manager instance.
  */
-+ (RKObjectManager *)sharedManager;
++ (instancetype)sharedManager;
 
 /**
  Set the shared instance of the object manager
@@ -231,12 +247,12 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 /**
  Creates and returns a new `RKObjectManager` object initialized with a new `AFHTTPClient` object that was in turn initialized with the given base URL. The RestKit defaults are applied to the object manager.
  
- When initialized with a base URL, the returned object manager will have a `requestSerializationMIMEType` with the value of `RKMIMETypeFormURLEncoded` and a default value for the 'Accept' header set to `RKMIMETypeJSON`.
+ When initialized with a base URL, the returned object manager will have a `requestSerializationMIMEType` with the value of `RKMIMETypeFormURLEncoded` and the underlying `HTTPClient` will have a default value for the 'Accept' header set to `RKMIMETypeJSON`, and the `AFJSONRequestOperation` class will be registered.
  
  @param baseURL The base URL with which to initialize the `AFHTTPClient` object
  @return A new `RKObjectManager` initialized with an `AFHTTPClient` that was initialized with the given baseURL.
  */
-+ (id)managerWithBaseURL:(NSURL *)baseURL;
++ (instancetype)managerWithBaseURL:(NSURL *)baseURL;
 
 /**
  Initializes the receiver with the given AFNetworking HTTP client object, adopting the network configuration from the client.
@@ -246,7 +262,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  @param client The AFNetworking HTTP client with which to initialize the receiver.
  @return The receiver, initialized with the given client.
  */
-- (id)initWithHTTPClient:(AFHTTPClient *)client;
+- (instancetype)initWithHTTPClient:(AFHTTPClient *)client;
 
 ///------------------------------------------
 /// @name Accessing Object Manager Properties
@@ -255,7 +271,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 /**
  The AFNetworking HTTP client with which the receiver makes requests.
  */
-@property (nonatomic, strong, readonly) AFHTTPClient *HTTPClient;
+@property (nonatomic, strong, readwrite) AFHTTPClient *HTTPClient;
 
 /**
  The base URL of the underlying HTTP client.
@@ -300,9 +316,11 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 @property (nonatomic, strong) NSString *requestSerializationMIMEType;
 
 /**
- The value for the HTTP "Accept" header to specify the preferred serialization format for retrieved data.
-
- If the receiver was initialized with an `AFHTTPClient`, then the value of the 'Accept' header is deferred to the client. If initialized directly with a baseURL, the default value is `RKMIMETypeJSON`, which is equal to the string `@"application/json"`. A value of `nil` will prevent the object manager from explicitly setting a value for the "Accept" header.
+ Sets a default header on the HTTP client for the HTTP "Accept" header to specify the preferred serialization format for retrieved data.
+ 
+ This method is a convenience method whose implementation is equivalent to the following example code:
+ 
+    [manager.HTTPClient setDefaultHeader:@"Accept" value:MIMEType];
 
  @param MIMEType The MIME Type to set as the value for the HTTP "Accept" header.
  */

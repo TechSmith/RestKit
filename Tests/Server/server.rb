@@ -87,7 +87,18 @@ class RestKitTestServer < Sinatra::Base
   delete '/humans/204' do
     status 204
     content_type 'application/json'
-    "{}"
+  end
+  
+  delete '/humans/empty' do
+    status 200
+    content_type 'application/json'
+    ""
+  end
+  
+  delete '/humans/success' do
+    status 200
+    content_type 'application/json'
+    {:human => {:status => 'OK'}}.to_json
   end
 
   post '/echo_params' do
@@ -282,6 +293,16 @@ class RestKitTestServer < Sinatra::Base
     content_type 'application/json'
     status 200
     ' '
+  end
+  
+  post '/ComplexUser' do
+    content_type 'application/json'
+    render_fixture('/JSON/ComplexNestedUser.json', :status => 200)
+  end
+  
+  get '/posts.json' do
+    content_type 'application/json'
+    { :posts => [{:title => 'Post Title', :body => 'Some body.', :tags => [{ :name => 'development' }, { :name => 'restkit' }] }] }.to_json
   end
 
   # start the server if ruby file executed directly

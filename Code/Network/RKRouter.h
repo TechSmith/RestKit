@@ -49,7 +49,7 @@
  @param baseURL The base URL with which to initialize the receiver.
  @return The receiver, initialized with the given base URL.
  */
-- (id)initWithBaseURL:(NSURL *)baseURL;
+- (instancetype)initWithBaseURL:(NSURL *)baseURL;
 
 ///----------------------
 /// @name Generating URLs
@@ -106,7 +106,7 @@
 /**
  The base URL that all URLs constructed by the receiver are relative to.
  */
-@property (nonatomic, strong, readonly) NSURL *baseURL;
+@property (nonatomic, strong, readwrite) NSURL *baseURL;
 
 /**
  A route set defining all the routes addressable through the receiver.

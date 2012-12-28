@@ -18,6 +18,7 @@
 //  limitations under the License.
 //
 
+#import <objc/runtime.h>
 #import "RKHTTPRequestOperation.h"
 #import "RKLog.h"
 #import "lcl_RK.h"
@@ -27,6 +28,8 @@
 // Set Logging Component
 #undef RKLogComponent
 #define RKLogComponent RKlcl_cRestKitNetwork
+
+NSString *RKStringFromIndexSet(NSIndexSet *indexSet); // Defined in RKResponseDescriptor.m
 
 static BOOL RKLogIsStringBlank(NSString *string)
 {
@@ -39,7 +42,7 @@ static NSString *RKLogTruncateString(NSString *string)
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSDictionary *envVars = [[NSProcessInfo processInfo] environment];
-        maxMessageLength = RKLogIsStringBlank(envVars[@"RKLogMaxLength"]) ? NSIntegerMax : [envVars[@"RKLogMaxLength"] integerValue];
+        maxMessageLength = RKLogIsStringBlank([envVars objectForKey:@"RKLogMaxLength"]) ? NSIntegerMax : [[envVars objectForKey:@"RKLogMaxLength"] integerValue];
     });
     
     return ([string length] <= maxMessageLength)
@@ -124,9 +127,17 @@ static NSString *RKStringDescribingStream(NSStream *stream)
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+static void *RKHTTPRequestOperationStartDate = &RKHTTPRequestOperationStartDate;
+
 - (void)HTTPOperationDidStart:(NSNotification *)notification
 {
     RKHTTPRequestOperation *operation = [notification object];
+    
+    if (![operation isKindOfClass:[AFHTTPRequestOperation class]]) {
+        return;
+    }
+    
+    objc_setAssociatedObject(operation, RKHTTPRequestOperationStartDate, [NSDate date], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if ((_RKlcl_component_level[(__RKlcl_log_symbol(RKlcl_cRestKitNetwork))]) >= (__RKlcl_log_symbol(RKlcl_vTrace))) {
         NSString *body = nil;
@@ -145,17 +156,27 @@ static NSString *RKStringDescribingStream(NSStream *stream)
 - (void)HTTPOperationDidFinish:(NSNotification *)notification
 {
     RKHTTPRequestOperation *operation = [notification object];
+    
+    if (![operation isKindOfClass:[AFHTTPRequestOperation class]]) {
+        return;
+    }
+    
+    NSTimeInterval elapsedTime = [[NSDate date] timeIntervalSinceDate:objc_getAssociatedObject(operation, RKHTTPRequestOperationStartDate)];
+    
+    NSString *statusCodeString = RKStringFromStatusCode([operation.response statusCode]);
+    NSString *elapsedTimeString = [NSString stringWithFormat:@"[%.04f s]", elapsedTime];
+    NSString *statusCodeAndElapsedTime = statusCodeString ? [NSString stringWithFormat:@"(%ld %@) %@", (long)[operation.response statusCode], statusCodeString, elapsedTimeString] : [NSString stringWithFormat:@"(%ld) %@", (long)[operation.response statusCode], elapsedTimeString];
     if (operation.error) {
         if ((_RKlcl_component_level[(__RKlcl_log_symbol(RKlcl_cRestKitNetwork))]) >= (__RKlcl_log_symbol(RKlcl_vTrace))) {
-            RKLogError(@"%@ '%@' (%ld):\nerror=%@\nresponse.body=%@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], (long)[operation.response statusCode], operation.error, operation.responseString);
+            RKLogError(@"%@ '%@' %@:\nerror=%@\nresponse.body=%@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], statusCodeAndElapsedTime, operation.error, operation.responseString);
         } else {
-          RKLogError(@"%@ '%@' (%ld): %@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], (long)[operation.response statusCode], operation.error);
+          RKLogError(@"%@ '%@' %@: %@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], statusCodeAndElapsedTime, operation.error);
         }
     } else {
         if ((_RKlcl_component_level[(__RKlcl_log_symbol(RKlcl_cRestKitNetwork))]) >= (__RKlcl_log_symbol(RKlcl_vTrace))) {
-            RKLogTrace(@"%@ '%@' (%ld):\nresponse.headers=%@\nresponse.body=%@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], (long)[operation.response statusCode], [operation.response allHeaderFields], RKLogTruncateString(operation.responseString));
+            RKLogTrace(@"%@ '%@' %@:\nresponse.headers=%@\nresponse.body=%@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], statusCodeAndElapsedTime, [operation.response allHeaderFields], RKLogTruncateString(operation.responseString));
         } else {
-            RKLogInfo(@"%@ '%@' (%ld)", [operation.request HTTPMethod], [[operation.request URL] absoluteString], (long)[operation.response statusCode]);
+            RKLogInfo(@"%@ '%@' %@", [operation.request HTTPMethod], [[operation.request URL] absoluteString], statusCodeAndElapsedTime);
         }
     }
 }
@@ -163,9 +184,12 @@ static NSString *RKStringDescribingStream(NSStream *stream)
 @end
 
 @interface AFURLConnectionOperation () <NSURLConnectionDelegate, NSURLConnectionDataDelegate>
+@property (readwrite, nonatomic, strong) NSError *HTTPError;
 @end
 
 @implementation RKHTTPRequestOperation
+
+@dynamic HTTPError;
 
 - (BOOL)hasAcceptableStatusCode
 {
@@ -175,6 +199,32 @@ static NSString *RKStringDescribingStream(NSStream *stream)
 - (BOOL)hasAcceptableContentType
 {
     return self.acceptableContentTypes ? RKMIMETypeInSet([self.response MIMEType], self.acceptableContentTypes) : [super hasAcceptableContentType];
+}
+
+- (NSError *)error
+{
+    // The first we are invoked, we need to mutate the HTTP error to correct the Content Types and Status Codes returned
+    if (self.response && !self.HTTPError) {
+        NSError *error = [super error];
+        if ([error.domain isEqualToString:AFNetworkingErrorDomain]) {
+            if (![self hasAcceptableStatusCode] || ![self hasAcceptableContentType]) {
+                NSMutableDictionary *userInfo = [error.userInfo mutableCopy];
+                
+                if (error.code == NSURLErrorBadServerResponse && ![self hasAcceptableStatusCode]) {
+                    // Replace the NSLocalizedDescriptionKey
+                    NSUInteger statusCode = ([self.response isKindOfClass:[NSHTTPURLResponse class]]) ? (NSUInteger)[self.response statusCode] : 200;
+                    [userInfo setValue:[NSString stringWithFormat:NSLocalizedString(@"Expected status code in (%@), got %d", nil), RKStringFromIndexSet(self.acceptableStatusCodes ?: [NSMutableIndexSet indexSet]), statusCode] forKey:NSLocalizedDescriptionKey];
+                    self.HTTPError = [[NSError alloc] initWithDomain:AFNetworkingErrorDomain code:NSURLErrorBadServerResponse userInfo:userInfo];
+                } else if (error.code == NSURLErrorCannotDecodeContentData && ![self hasAcceptableContentType]) {
+                    // Because we have shifted the Acceptable Content Types and Status Codes
+                    [userInfo setValue:[NSString stringWithFormat:NSLocalizedString(@"Expected content type %@, got %@", nil), self.acceptableContentTypes, [self.response MIMEType]] forKey:NSLocalizedDescriptionKey];
+                    self.HTTPError = [[NSError alloc] initWithDomain:AFNetworkingErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:userInfo];
+                }
+            }
+        }
+    }
+    
+    return [super error];
 }
 
 - (BOOL)wasNotModified

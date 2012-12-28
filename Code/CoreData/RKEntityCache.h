@@ -43,7 +43,7 @@
  @param context The managed object context containing objects to be cached.
  @returns self, initialized with context.
  */
-- (id)initWithManagedObjectContext:(NSManagedObjectContext *)context;
+- (instancetype)initWithManagedObjectContext:(NSManagedObjectContext *)context;
 
 /**
  The managed object context with which the receiver is associated.
@@ -91,7 +91,7 @@
  @return All matching managed object instances or nil.
  @raise NSInvalidArgumentException Raised if instances of the entity and attribute have not been cached.
  */
-- (NSArray *)objectsForEntity:(NSEntityDescription *)entity withAttributeValues:(NSDictionary *)attributeValues inContext:(NSManagedObjectContext *)context;
+- (NSSet *)objectsForEntity:(NSEntityDescription *)entity withAttributeValues:(NSDictionary *)attributeValues inContext:(NSManagedObjectContext *)context;
 
 ///-----------------------------------------------------------------------------
 // @name Accessing Underlying Caches

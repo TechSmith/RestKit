@@ -75,7 +75,7 @@
  @param objectClass The class that the mapping targets.
  @return A new mapping object.
  */
-+ (id)mappingForClass:(Class)objectClass;
++ (instancetype)mappingForClass:(Class)objectClass;
 
 /**
  Initializes the receiver with a given object class. This is the designated initializer.
@@ -83,7 +83,7 @@
  @param objectClass The class that the mapping targets. Cannot be `nil`.
  @return The receiver, initialized with the given class.
  */
-- (id)initWithClass:(Class)objectClass;
+- (instancetype)initWithClass:(Class)objectClass;
 
 /**
  Returns an object mapping with an `objectClass` of `NSMutableDictionary`.
@@ -94,7 +94,7 @@
  @see `RKObjectParameterization`
  @see `RKObjectManager`
  */
-+ (id)requestMapping;
++ (instancetype)requestMapping;
 
 ///---------------------------------
 /// @name Managing Property Mappings
@@ -294,11 +294,13 @@
 @property (nonatomic, strong) NSFormatter *preferredDateFormatter;
 
 /**
- Generates an inverse mapping for the rules specified within this object mapping. This can be used to
- quickly generate a corresponding serialization mapping from a configured object mapping. The inverse
- mapping will have the source and destination keyPaths swapped for all attribute and relationship mappings.
+ Generates an inverse mapping for the rules specified within this object mapping. 
+ 
+ This can be used to quickly generate a corresponding serialization mapping from a configured object mapping. The inverse mapping will have the source and destination keyPaths swapped for all attribute and relationship mappings. All mapping configuration and date formatters are copied from the parent to the inverse mapping.
+ 
+ @return A new mapping that will map the inverse of the receiver.
  */
-- (RKObjectMapping *)inverseMapping;
+- (instancetype)inverseMapping;
 
 ///---------------------------------------------------
 /// @name Obtaining Information About the Target Class
@@ -313,7 +315,6 @@
  @return The class of the property.
  */
 - (Class)classForProperty:(NSString *)propertyName;
-// TODO: Can I eliminate this and just use classForKeyPath:????
 
 /**
  Returns the class of the attribute or relationship property of the target `objectClass` at the given key path.
@@ -375,7 +376,9 @@
 /**
  Returns the preferred date formatter to use when generating NSString representations from NSDate attributes. This type of transformation occurs when RestKit is mapping local objects into JSON or form encoded serializations that do not have a native time construct.
 
- Defaults to a date formatter configured for the UTC Time Zone with a format string of "yyyy-MM-dd HH:mm:ss Z"
+ Defaults to an instance of the `RKISO8601DateFormatter` configured with the UTC time-zone. The format string is equal to "YYYY-MM-DDThh:mm:ssTZD"
+ 
+ For details about the ISO-8601 format, see http://www.w3.org/TR/NOTE-datetime
 
  @return The preferred NSFormatter object to use when serializing dates into strings
  */

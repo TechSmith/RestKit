@@ -46,7 +46,7 @@
  @return The receiver, initialized with the given entity, attribute, and managed object
     context.
  */
-- (id)initWithEntity:(NSEntityDescription *)entity attributes:(NSArray *)attributeNames managedObjectContext:(NSManagedObjectContext *)context;
+- (instancetype)initWithEntity:(NSEntityDescription *)entity attributes:(NSArray *)attributeNames managedObjectContext:(NSManagedObjectContext *)context;
 
 ///-----------------------------
 /// @name Getting Cache Identity
@@ -153,7 +153,7 @@
  @param context The managed object context to retrieve the objects from.
  @return An array of objects with the value of attribute matching attributeValue or an empty array.
  */
-- (NSArray *)objectsWithAttributeValues:(NSDictionary *)attributeValues inContext:(NSManagedObjectContext *)context;
+- (NSSet *)objectsWithAttributeValues:(NSDictionary *)attributeValues inContext:(NSManagedObjectContext *)context;
 
 ///------------------------------
 /// @name Managing Cached Objects
