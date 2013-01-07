@@ -225,6 +225,7 @@ static NSSet *RKFlattenCollectionToSet(id collection)
     return mutableSet;
 }
 
+
 /**
  Traverses a set of cyclic key paths within the mapping result. Because these relationships are cyclic, we continue collecting managed objects and traversing until the values returned by the key path are a complete subset of all objects already in the set.
  */
@@ -233,7 +234,18 @@ static void RKAddObjectsInGraphWithCyclicKeyPathsToMutableSet(id graph, NSSet *c
     if ([graph respondsToSelector:@selector(count)] && [graph count] == 0) return;
     
     for (NSString *cyclicKeyPath in cyclicKeyPaths) {
-        NSSet *objectsAtCyclicKeyPath = RKFlattenCollectionToSet([graph valueForKeyPath:cyclicKeyPath]);
+
+       // Relationships that are in some objects in this cyclic graph may not be in other objects in the graph
+       // to account for this we eat the exception when a relationship is not found
+       NSSet *objectsAtCyclicKeyPath = nil;
+       @try {
+          objectsAtCyclicKeyPath = RKFlattenCollectionToSet([graph valueForKeyPath:cyclicKeyPath]);
+       }
+       @catch (NSException *exception) {
+          //NSLog( @"Exception Happened %@", exception );
+          continue;
+       }
+       
         if ([objectsAtCyclicKeyPath count] == 0 || [objectsAtCyclicKeyPath isEqualToSet:[NSSet setWithObject:[NSNull null]]]) continue;
         if (! [objectsAtCyclicKeyPath isSubsetOfSet:mutableSet]) {
             [mutableSet unionSet:objectsAtCyclicKeyPath];
