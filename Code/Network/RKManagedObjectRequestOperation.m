@@ -24,6 +24,8 @@
 #import "RKResponseMapperOperation.h"
 #import "RKRequestOperationSubclass.h"
 #import "NSManagedObjectContext+RKAdditions.h"
+#import "NSManagedObject+RKAdditions.h"
+#import "RKObjectUtilities.h"
 
 // Graph visitor
 #import "RKResponseDescriptor.h"
@@ -35,10 +37,27 @@
 #undef RKLogComponent
 #define RKLogComponent RKlcl_cRestKitCoreData
 
+static NSString *RKKeyPathToCyclicReferenceToMappingInMapping(RKObjectMapping *objectMapping, RKObjectMapping *inMapping)
+{
+    for (RKRelationshipMapping *nestedRelationship in inMapping.relationshipMappings) {
+        if (nestedRelationship.mapping == objectMapping) {
+            return nestedRelationship.destinationKeyPath;
+        } else {
+            if ([nestedRelationship.mapping isKindOfClass:[RKObjectMapping class]]) {
+                NSString *childKeyPath = RKKeyPathToCyclicReferenceToMappingInMapping(objectMapping, (RKObjectMapping *)nestedRelationship.mapping);
+                if (childKeyPath) return [nestedRelationship.destinationKeyPath stringByAppendingFormat:@".%@", childKeyPath];
+            }
+        }
+    }
+    
+    return nil;
+}
+
 @interface RKMappingGraphVisitation : NSObject
 @property (nonatomic, strong) id rootKey; // Will be [NSNull null] or a string value
 @property (nonatomic, strong) NSString *keyPath;
-@property (nonatomic, assign, getter = isCyclic) BOOL cyclic;
+@property (nonatomic, strong) NSString *cyclicKeyPath;
+@property (nonatomic, readonly) BOOL isCyclic;
 @property (nonatomic, strong) RKMapping *mapping;
 @end
 
@@ -48,6 +67,11 @@
 {
     return [NSString stringWithFormat:@"<%@: %p rootKey=%@ keyPath=%@ isCylic=%@ mapping=%@>",
             [self class], self, self.rootKey, self.keyPath, self.isCyclic ? @"YES" : @"NO", self.mapping];
+}
+
+- (BOOL)isCyclic
+{
+    return self.cyclicKeyPath != nil;
 }
 
 @end
@@ -156,8 +180,10 @@
                 
                 // Since this mapping already appears in lowLinks, we have a cycle at this point in the graph
                 if ([relationshipMapping.mapping isKindOfClass:[RKEntityMapping class]]) {
+                    // The mapping of the relationship cycles back to itself. We need to determine the key path for the cycle and save it for later traversal.
+                    NSString *keyPathToRelationshipCycle = RKKeyPathToCyclicReferenceToMappingInMapping((RKEntityMapping *)relationshipMapping.mapping, (RKEntityMapping *)relationshipMapping.mapping);
                     RKMappingGraphVisitation *cyclicVisitation = [self visitationForMapping:relationshipMapping.mapping atKeyPath:nestedKeyPath];
-                    cyclicVisitation.cyclic = YES;
+                    cyclicVisitation.cyclicKeyPath = keyPathToRelationshipCycle;
                     [self.visitations addObject:cyclicVisitation];
                 }
             }
@@ -227,31 +253,17 @@ static NSSet *RKFlattenCollectionToSet(id collection)
 
 
 /**
- Traverses a set of cyclic key paths within the mapping result. Because these relationships are cyclic, we continue collecting managed objects and traversing until the values returned by the key path are a complete subset of all objects already in the set.
+ Traverses a cyclic key path within the mapping result. Because the relationship is cyclic, we continue collecting managed objects and traversing until the values returned by the key path are a complete subset of all objects already in the set.
  */
-static void RKAddObjectsInGraphWithCyclicKeyPathsToMutableSet(id graph, NSSet *cyclicKeyPaths, NSMutableSet *mutableSet)
+static void RKAddObjectsInGraphWithCyclicKeyPathToMutableSet(id graph, NSString *cyclicKeyPath, NSMutableSet *mutableSet)
 {
-    if ([graph respondsToSelector:@selector(count)] && [graph count] == 0) return;
-    
-    for (NSString *cyclicKeyPath in cyclicKeyPaths) {
-
-       // Relationships that are in some objects in this cyclic graph may not be in other objects in the graph
-       // to account for this we eat the exception when a relationship is not found
-       NSSet *objectsAtCyclicKeyPath = nil;
-       @try {
-          objectsAtCyclicKeyPath = RKFlattenCollectionToSet([graph valueForKeyPath:cyclicKeyPath]);
-       }
-       @catch (NSException *exception) {
-          //NSLog( @"Exception Happened %@", exception );
-          continue;
-       }
-       
-        if ([objectsAtCyclicKeyPath count] == 0 || [objectsAtCyclicKeyPath isEqualToSet:[NSSet setWithObject:[NSNull null]]]) continue;
-        if (! [objectsAtCyclicKeyPath isSubsetOfSet:mutableSet]) {
-            [mutableSet unionSet:objectsAtCyclicKeyPath];
-            for (id nestedValue in objectsAtCyclicKeyPath) {
-                RKAddObjectsInGraphWithCyclicKeyPathsToMutableSet(nestedValue, cyclicKeyPaths, mutableSet);
-            }
+    if ([graph respondsToSelector:@selector(count)] && [graph count] == 0) return;    
+    NSSet *objectsAtCyclicKeyPath = RKFlattenCollectionToSet([graph valueForKeyPath:cyclicKeyPath]);
+    if ([objectsAtCyclicKeyPath count] == 0 || [objectsAtCyclicKeyPath isEqualToSet:[NSSet setWithObject:[NSNull null]]]) return;
+    if (! [objectsAtCyclicKeyPath isSubsetOfSet:mutableSet]) {
+        [mutableSet unionSet:objectsAtCyclicKeyPath];
+        for (id nestedValue in objectsAtCyclicKeyPath) {
+            RKAddObjectsInGraphWithCyclicKeyPathToMutableSet(nestedValue, cyclicKeyPath, mutableSet);
         }
     }
 }
@@ -278,19 +290,6 @@ NSSet *RKSetByRemovingSubkeypathsFromSet(NSSet *setOfKeyPaths)
     }];
 }
 
-static void RKSetMappedValueForKeyPathInDictionary(id value, id rootKey, NSString *keyPath, NSMutableDictionary *dictionary)
-{
-    NSCParameterAssert(value);
-    NSCParameterAssert(rootKey);
-    NSCParameterAssert(dictionary);
-    if (keyPath && ![keyPath isEqual:[NSNull null]]) {
-        id valueAtRootKey = [dictionary objectForKey:rootKey];
-        [valueAtRootKey setValue:value forKeyPath:keyPath];
-    } else {
-        [dictionary setObject:value forKey:rootKey];
-    }
-}
-
 // Precondition: Must be called from within the correct context
 static NSManagedObject *RKRefetchManagedObjectInContext(NSManagedObject *managedObject, NSManagedObjectContext *managedObjectContext)
 {    
@@ -304,6 +303,41 @@ static NSManagedObject *RKRefetchManagedObjectInContext(NSManagedObject *managed
     NSManagedObject *refetchedObject = [managedObjectContext existingObjectWithID:managedObjectID error:&error];
     NSCAssert(refetchedObject, @"Failed to find existing object with ID %@ in context %@: %@", managedObjectID, managedObjectContext, error);
     return refetchedObject;
+}
+
+static id RKRefetchedValueInManagedObjectContext(id value, NSManagedObjectContext *managedObjectContext)
+{
+    if (! value) {
+        return value;
+    } else if ([value isKindOfClass:[NSArray class]]) {
+        BOOL isMutable = [value isKindOfClass:[NSMutableArray class]];
+        NSMutableArray *newValue = [[NSMutableArray alloc] initWithCapacity:[value count]];
+        for (__strong id object in value) {
+            if ([object isKindOfClass:[NSManagedObject class]]) object = RKRefetchManagedObjectInContext(object, managedObjectContext);
+            if (object) [newValue addObject:object];
+        }
+        value = (isMutable) ? newValue : [newValue copy];
+    } else if ([value isKindOfClass:[NSSet class]]) {
+        BOOL isMutable = [value isKindOfClass:[NSMutableSet class]];
+        NSMutableSet *newValue = [[NSMutableSet alloc] initWithCapacity:[value count]];
+        for (__strong id object in value) {
+            if ([object isKindOfClass:[NSManagedObject class]]) object = RKRefetchManagedObjectInContext(object, managedObjectContext);
+            if (object) [newValue addObject:object];
+        }
+        value = (isMutable) ? newValue : [newValue copy];
+    } else if ([value isKindOfClass:[NSOrderedSet class]]) {
+        BOOL isMutable = [value isKindOfClass:[NSMutableOrderedSet class]];
+        NSMutableOrderedSet *newValue = [NSMutableOrderedSet orderedSet];
+        [(NSOrderedSet *)value enumerateObjectsUsingBlock:^(id object, NSUInteger index, BOOL *stop) {
+            if ([object isKindOfClass:[NSManagedObject class]]) object = RKRefetchManagedObjectInContext(object, managedObjectContext);
+            if (object) [newValue setObject:object atIndex:index];
+        }];
+        value = (isMutable) ? newValue : [newValue copy];
+    } else if ([value isKindOfClass:[NSManagedObject class]]) {
+        value = RKRefetchManagedObjectInContext(value, managedObjectContext);
+    }
+    
+    return value;
 }
 
 // Finds the key paths for all entity mappings in the graph whose parent objects are not other managed objects
@@ -320,41 +354,29 @@ static NSDictionary *RKDictionaryFromDictionaryWithManagedObjectsInVisitationsRe
             // If keyPaths contains null, then the root object is a managed object and we only need to refetch it
             NSSet *nonNestedKeyPaths = ([keyPaths containsObject:[NSNull null]]) ? [NSSet setWithObject:[NSNull null]] : RKSetByRemovingSubkeypathsFromSet(keyPaths);
             
-            NSDictionary *mappingResultsAtRootKey = [dictionaryOfManagedObjects objectForKey:rootKey];
+            NSDictionary *mappingResultsAtRootKey = [newDictionary objectForKey:rootKey];
             for (NSString *keyPath in nonNestedKeyPaths) {
-                id value = [keyPath isEqual:[NSNull null]] ? mappingResultsAtRootKey : [mappingResultsAtRootKey valueForKeyPath:keyPath];
-                if (! value) {
-                    continue;
-                } else if ([value isKindOfClass:[NSArray class]]) {
-                    BOOL isMutable = [value isKindOfClass:[NSMutableArray class]];
-                    NSMutableArray *newValue = [[NSMutableArray alloc] initWithCapacity:[value count]];
-                    for (__strong id object in value) {
-                        if ([object isKindOfClass:[NSManagedObject class]]) object = RKRefetchManagedObjectInContext(object, managedObjectContext);
-                        if (object) [newValue addObject:object];
+                id value = nil;
+                if ([keyPath isEqual:[NSNull null]]) {
+                    value = RKRefetchedValueInManagedObjectContext(mappingResultsAtRootKey, managedObjectContext);
+                    if (value) [newDictionary setObject:value forKey:rootKey];
+                } else {
+                    NSMutableArray *keyPathComponents = [[keyPath componentsSeparatedByString:@"."] mutableCopy];
+                    NSString *destinationKey = [keyPathComponents lastObject];
+                    [keyPathComponents removeLastObject];
+                    id sourceObject = [keyPathComponents count] ? [mappingResultsAtRootKey valueForKeyPath:[keyPathComponents componentsJoinedByString:@"."]] : mappingResultsAtRootKey;
+                    if (RKObjectIsCollection(sourceObject)) {
+                        // This is a to-many relationship, we want to refetch each item at the keyPath
+                        for (id nestedObject in sourceObject) {
+                            // Refetch this object. Set it on the destination.
+                            NSManagedObject *managedObject = [nestedObject valueForKey:destinationKey];
+                            [nestedObject setValue:RKRefetchedValueInManagedObjectContext(managedObject, managedObjectContext) forKey:destinationKey];
+                        }
+                    } else {
+                        // This is a singular relationship. We want to refetch the object and set it directly.
+                        id valueToRefetch = [sourceObject valueForKey:destinationKey];
+                        [sourceObject setValue:RKRefetchedValueInManagedObjectContext(valueToRefetch, managedObjectContext) forKey:destinationKey];
                     }
-                    value = (isMutable) ? newValue : [newValue copy];
-                } else if ([value isKindOfClass:[NSSet class]]) {
-                    BOOL isMutable = [value isKindOfClass:[NSMutableSet class]];
-                    NSMutableSet *newValue = [[NSMutableSet alloc] initWithCapacity:[value count]];
-                    for (__strong id object in value) {
-                        if ([object isKindOfClass:[NSManagedObject class]]) object = RKRefetchManagedObjectInContext(object, managedObjectContext);
-                        if (object) [newValue addObject:object];
-                    }
-                    value = (isMutable) ? newValue : [newValue copy];
-                } else if ([value isKindOfClass:[NSOrderedSet class]]) {
-                    BOOL isMutable = [value isKindOfClass:[NSMutableOrderedSet class]];
-                    NSMutableOrderedSet *newValue = [NSMutableOrderedSet orderedSet];
-                    [(NSOrderedSet *)value enumerateObjectsUsingBlock:^(id object, NSUInteger index, BOOL *stop) {
-                        if ([object isKindOfClass:[NSManagedObject class]]) object = RKRefetchManagedObjectInContext(object, managedObjectContext);
-                        if (object) [newValue setObject:object atIndex:index];
-                    }];
-                    value = (isMutable) ? newValue : [newValue copy];
-                } else if ([value isKindOfClass:[NSManagedObject class]]) {
-                    value = RKRefetchManagedObjectInContext(value, managedObjectContext);
-                }
-                
-                if (value) {
-                    RKSetMappedValueForKeyPathInDictionary(value, rootKey, keyPath, newDictionary);
                 }
             }
         }
@@ -418,10 +440,9 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
     if (managedObjectContext) {
         // Create a private context
         NSManagedObjectContext *privateContext = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-        [privateContext performBlockAndWait:^{
-            privateContext.parentContext = managedObjectContext;
-            privateContext.mergePolicy  = NSMergeByPropertyStoreTrumpMergePolicy;
-        }];
+        [privateContext setParentContext:managedObjectContext];
+        [privateContext setMergePolicy:NSMergeByPropertyStoreTrumpMergePolicy];
+
         self.privateContext = privateContext;
     } else {
         self.privateContext = nil;
@@ -569,13 +590,11 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
             }
             [exception raise];
         }
-        [managedObjectsInMappingResult unionSet:RKFlattenCollectionToSet(managedObjects)];
+        NSSet *flattenedSet = RKFlattenCollectionToSet(managedObjects);
+        [managedObjectsInMappingResult unionSet:flattenedSet];
         
-        if (visitation.isCyclic) {
-            NSSet *cyclicKeyPaths = [NSSet setWithArray:[visitation valueForKeyPath:@"mapping.relationshipMappings.destinationKeyPath"]];
-            [managedObjectsInMappingResult unionSet:RKFlattenCollectionToSet(managedObjects)];
-            RKAddObjectsInGraphWithCyclicKeyPathsToMutableSet(managedObjects, cyclicKeyPaths, managedObjectsInMappingResult);
-        }
+        // Traverse the cyclic keyPath if necessary
+        if (visitation.isCyclic) RKAddObjectsInGraphWithCyclicKeyPathToMutableSet(flattenedSet, visitation.cyclicKeyPath, managedObjectsInMappingResult);
     }
 
     NSSet *localObjects = [self localObjectsFromFetchRequestsMatchingRequestURL:error];
@@ -593,33 +612,43 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
     return YES;
 }
 
-- (BOOL)saveContext:(NSError **)error
+- (BOOL)saveContext:(NSManagedObjectContext *)context error:(NSError **)error
 {
     __block BOOL success = YES;
     __block NSError *localError = nil;
-    if ([self.privateContext hasChanges]) {
-        if (self.savesToPersistentStore) {
-            success = [self.privateContext saveToPersistentStore:&localError];
-        } else {
-            [self.privateContext performBlockAndWait:^{
-                success = [self.privateContext save:&localError];
+    if (self.savesToPersistentStore) {
+        success = [context saveToPersistentStore:&localError];
+    } else {
+        [context performBlockAndWait:^{
+            success = [context save:&localError];
+        }];
+    }
+    if (success) {
+        if ([self.targetObject isKindOfClass:[NSManagedObject class]]) {
+            [self.managedObjectContext performBlock:^{
+                RKLogDebug(@"Refreshing mapped target object %@ in context %@", self.targetObject, self.managedObjectContext);
+                [self.managedObjectContext refreshObject:self.targetObject mergeChanges:YES];
             }];
         }
-        if (success) {
-            if ([self.targetObject isKindOfClass:[NSManagedObject class]]) {
-                [self.managedObjectContext performBlock:^{
-                    RKLogDebug(@"Refreshing mapped target object %@ in context %@", self.targetObject, self.managedObjectContext);
-                    [self.managedObjectContext refreshObject:self.targetObject mergeChanges:YES];
-                }];
-            }
-        } else {
-            if (error) *error = localError;
-            RKLogError(@"Failed saving managed object context %@ %@", (self.savesToPersistentStore ? @"to the persistent store" : @""),  self.privateContext);
-            RKLogCoreDataError(localError);
-        }
+    } else {
+        if (error) *error = localError;
+        RKLogError(@"Failed saving managed object context %@ %@", (self.savesToPersistentStore ? @"to the persistent store" : @""),  context);
+        RKLogCoreDataError(localError);
     }
 
     return success;
+}
+
+- (BOOL)saveContext:(NSError **)error
+{
+    if ([self.privateContext hasChanges]) {
+        return [self saveContext:self.privateContext error:error];
+    } else if ([self.targetObject isKindOfClass:[NSManagedObject class]] && [(NSManagedObject *)self.targetObject isNew]) {
+        // Object was like POST'd in an unsaved state and we wish to persist
+        return [self saveContext:[self.targetObject managedObjectContext] error:error];
+    }
+
+    return YES;
 }
 
 - (BOOL)obtainPermanentObjectIDsForInsertedObjects:(NSError **)error
