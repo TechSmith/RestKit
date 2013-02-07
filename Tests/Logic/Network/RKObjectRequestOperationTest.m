@@ -650,4 +650,81 @@
     expect([requestOperation.error localizedDescription]).to.equal(@"error1, error2");
 }
 
+- (void)testFiveHundredErrorWithEmptyResponse
+{
+    RKObjectMapping *errorResponseMapping = [RKObjectMapping mappingForClass:[RKErrorMessage class]];
+    [errorResponseMapping addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:nil toKeyPath:@"errorMessage"]];
+    RKResponseDescriptor *errorDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:errorResponseMapping pathPattern:nil keyPath:@"errors" statusCodes:nil];
+    RKObjectMapping *userMapping = [RKObjectMapping mappingForClass:[RKTestComplexUser class]];
+    RKResponseDescriptor *userDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:userMapping pathPattern:nil keyPath:@"user" statusCodes:[NSIndexSet indexSetWithIndex:200]];
+    
+    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:@"/500" relativeToURL:[RKTestFactory baseURL]]];
+    RKObjectRequestOperation *requestOperation = [[RKObjectRequestOperation alloc] initWithRequest:request responseDescriptors:@[ userDescriptor, errorDescriptor ]];
+    [requestOperation start];
+    [requestOperation waitUntilFinished];
+    
+    expect(requestOperation.error).willNot.beNil();
+    expect([requestOperation.error localizedDescription]).to.equal(@"Loaded an unprocessable response (500) with content type 'application/json'");
+}
+
+- (void)testThatAnObjectRequestOperationSentWithEmptyMappingInResponseDescriptorsIsConsideredSuccessful
+{
+    RKObjectMapping *userMapping = [RKObjectMapping mappingForClass:[RKTestComplexUser class]];
+    RKResponseDescriptor *responseDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:userMapping pathPattern:nil keyPath:nil statusCodes:RKStatusCodeIndexSetForClass(RKStatusCodeClassSuccessful)];
+    
+    RKTestComplexUser *user = [RKTestComplexUser new];
+    user.firstname = @"Blake";
+    user.lastname = @"Watters";
+    user.email = @"blake@restkit.org";
+    
+    NSMutableURLRequest *request = [NSMutableURLRequest  requestWithURL:[NSURL URLWithString:@"/humans" relativeToURL:[RKTestFactory baseURL]]];
+    request.HTTPMethod = @"POST";
+    RKObjectRequestOperation *requestOperation = [[RKObjectRequestOperation alloc] initWithRequest:request responseDescriptors:@[ responseDescriptor ]];
+    requestOperation.targetObject = user;
+    [requestOperation start];
+    expect(requestOperation.error).to.beNil();
+    expect(requestOperation.mappingResult).notTo.beNil();
+}
+
+- (void)testThatAnObjectRequestOperationSentWithEmptyMappingInResponseDescriptorsTo5xxEndpointIsConsideredSuccessful
+{
+    RKObjectMapping *userMapping = [RKObjectMapping mappingForClass:[RKTestComplexUser class]];
+    RKResponseDescriptor *responseDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:userMapping pathPattern:nil keyPath:nil statusCodes:RKStatusCodeIndexSetForClass(RKStatusCodeClassSuccessful)];
+    
+    RKTestComplexUser *user = [RKTestComplexUser new];
+    user.firstname = @"Blake";
+    user.lastname = @"Watters";
+    user.email = @"blake@restkit.org";
+    
+    NSMutableURLRequest *request = [NSMutableURLRequest  requestWithURL:[NSURL URLWithString:@"/humans/fail" relativeToURL:[RKTestFactory baseURL]]];
+    request.HTTPMethod = @"POST";
+    RKObjectRequestOperation *requestOperation = [[RKObjectRequestOperation alloc] initWithRequest:request responseDescriptors:@[ responseDescriptor ]];
+    requestOperation.targetObject = user;
+    [requestOperation start];
+    expect(requestOperation.error).notTo.beNil();
+    expect([requestOperation.error localizedDescription]).to.equal(@"Expected status code in (200-299), got 500");
+}
+
+- (void)testMappingMetadataConfiguredOnTheOperation
+{
+    RKObjectMapping *userMapping = [RKObjectMapping mappingForClass:[RKTestComplexUser class]];
+    [userMapping addAttributeMappingsFromDictionary:@{ @"@metadata.phoneNumber": @"phone" }];
+    RKResponseDescriptor *responseDescriptor = [RKResponseDescriptor responseDescriptorWithMapping:userMapping pathPattern:nil keyPath:nil statusCodes:RKStatusCodeIndexSetForClass(RKStatusCodeClassSuccessful)];
+
+    RKTestComplexUser *user = [RKTestComplexUser new];
+    user.firstname = @"Blake";
+    user.lastname = @"Watters";
+    user.email = @"blake@restkit.org";
+
+    NSMutableURLRequest *request = [NSMutableURLRequest  requestWithURL:[NSURL URLWithString:@"/humans" relativeToURL:[RKTestFactory baseURL]]];
+    request.HTTPMethod = @"POST";
+    RKObjectRequestOperation *requestOperation = [[RKObjectRequestOperation alloc] initWithRequest:request responseDescriptors:@[ responseDescriptor ]];
+    requestOperation.mappingMetadata = @{ @"phoneNumber": @"867-5309" };
+    requestOperation.targetObject = user;
+    [requestOperation start];
+    expect(requestOperation.error).to.beNil();
+    expect(requestOperation.mappingResult).notTo.beNil();
+    expect(user.phone).to.equal(@"867-5309");
+}
+
 @end

@@ -202,6 +202,11 @@ class RestKitTestServer < Sinatra::Base
     content_type 'application/json'
     render_fixture('/JSON/errors.json', :status => 500)
   end
+  
+  get '/500' do
+    status 500
+    content_type 'application/json'
+  end
 
   # Expects an uploaded 'file' param
   post '/api/upload/' do
@@ -312,6 +317,11 @@ class RestKitTestServer < Sinatra::Base
   get '/posts_with_invalid.json' do
     content_type 'application/json'
     { :posts => [{:title => 'Post Title', :body => 'Some body.'}, {:title => '', :body => 'Some body.'} ] }.to_json
+  end
+  
+  get '/posts/:post_id/tags' do
+    content_type 'application/json'
+    [{ :name => 'development' }, { :name => 'restkit' }].to_json
   end
 
   # start the server if ruby file executed directly

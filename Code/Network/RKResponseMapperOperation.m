@@ -27,6 +27,7 @@
 #import "RKResponseMapperOperation.h"
 #import "RKMappingErrors.h"
 #import "RKMIMETypeSerialization.h"
+#import "RKDictionaryUtilities.h"
 
 // Set Logging Component
 #undef RKLogComponent
@@ -48,11 +49,22 @@ NSError *RKErrorFromMappingResult(RKMappingResult *mappingResult)
     return error;
 }
 
-static NSError *RKUnprocessableClientErrorFromResponse(NSHTTPURLResponse *response)
+static NSIndexSet *RKErrorStatusCodes()
 {
-    NSCAssert(NSLocationInRange(response.statusCode, RKStatusCodeRangeForClass(RKStatusCodeClassClientError)), @"Expected response status code to be in the 400-499 range, instead got %ld", (long) response.statusCode);
+    static NSIndexSet *errorStatusCodes = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        errorStatusCodes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(400, 200)];
+    });
+    
+    return errorStatusCodes;
+}
+
+static NSError *RKUnprocessableErrorFromResponse(NSHTTPURLResponse *response)
+{
+    NSCAssert([RKErrorStatusCodes() containsIndex:response.statusCode], @"Expected response status code to be in the 400-599 range, instead got %ld", (long) response.statusCode);
     NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
-    [userInfo setValue:[NSString stringWithFormat:@"Loaded an unprocessable client error response (%ld)", (long) response.statusCode] forKey:NSLocalizedDescriptionKey];
+    [userInfo setValue:[NSString stringWithFormat:@"Loaded an unprocessable error response (%ld)", (long) response.statusCode] forKey:NSLocalizedDescriptionKey];
     [userInfo setValue:[response URL] forKey:NSURLErrorFailingURLErrorKey];
     
     return [[NSError alloc] initWithDomain:RKErrorDomain code:NSURLErrorBadServerResponse userInfo:userInfo];
@@ -91,17 +103,6 @@ static NSString *RKFailureReasonErrorStringForResponseDescriptorsMismatchWithRes
     return failureReason;
 }
 
-static NSIndexSet *RKErrorStatusCodes()
-{
-    static NSIndexSet *errorStatusCodes = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        errorStatusCodes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(400, 200)];
-    });
-    
-    return errorStatusCodes;
-}
-
 /**
  A serial dispatch queue used for all deserialization of response bodies
  */
@@ -116,6 +117,7 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
 }
 
 @interface RKResponseMapperOperation ()
+@property (nonatomic, strong, readwrite) NSURLRequest *request;
 @property (nonatomic, strong, readwrite) NSHTTPURLResponse *response;
 @property (nonatomic, strong, readwrite) NSData *data;
 @property (nonatomic, strong, readwrite) NSArray *responseDescriptors;
@@ -135,19 +137,25 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
 
 @implementation RKResponseMapperOperation
 
-- (id)initWithResponse:(NSHTTPURLResponse *)response data:(NSData *)data responseDescriptors:(NSArray *)responseDescriptors
+- (id)initWithRequest:(NSURLRequest *)request
+             response:(NSHTTPURLResponse *)response
+                 data:(NSData *)data
+  responseDescriptors:(NSArray *)responseDescriptors;
 {
+    NSParameterAssert(request);
     NSParameterAssert(response);
     NSParameterAssert(responseDescriptors);
     
     self = [super init];
     if (self) {
+        self.request = request;
         self.response = response;
         self.data = data;
         self.responseDescriptors = responseDescriptors;
         self.matchingResponseDescriptors = [self buildMatchingResponseDescriptors];
         self.responseMappingsDictionary = [self buildResponseMappingsDictionary];
         self.treatsEmptyResponseAsSuccess = YES;
+        self.mappingMetadata = @{}; // Initialize the metadata
     }
 
     return self;
@@ -212,6 +220,13 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
     return (length == 0 || (length == 1 && [self.data isEqualToData:whitespaceData]));
 }
 
+- (void)setMappingMetadata:(NSDictionary *)mappingMetadata
+{
+    NSDictionary *HTTPMetadata = @{ @"HTTP": @{ @"request":  @{ @"URL": self.request.URL, @"method": self.request.HTTPMethod, @"headers": [self.request allHTTPHeaderFields] ?: @{} },
+                                                @"response": @{ @"URL": self.response.URL, @"headers": [self.response allHeaderFields] ?: @{} } } };
+    _mappingMetadata = RKDictionaryByMergingDictionaryWithDictionary(HTTPMetadata, mappingMetadata);
+}
+
 - (void)cancel
 {
     [super cancel];
@@ -226,7 +241,7 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
     
     // If we are an error response and empty, we emit an error that the content is unmappable
     if (isErrorStatusCode && [self hasEmptyResponse]) {
-        self.error = RKUnprocessableClientErrorFromResponse(self.response);
+        self.error = RKUnprocessableErrorFromResponse(self.response);
         return;
     }
 
@@ -274,7 +289,7 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
             error = RKErrorFromMappingResult(self.mappingResult);
         } else {
             // We encountered a client error that we could not map, throw unprocessable error
-            if (! error) error = RKUnprocessableClientErrorFromResponse(self.response);
+            if (! error) error = RKUnprocessableErrorFromResponse(self.response);
         }
         self.error = error;
         return;
@@ -308,6 +323,7 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
     self.mapperOperation = [[RKMapperOperation alloc] initWithRepresentation:sourceObject mappingsDictionary:self.responseMappingsDictionary];
     self.mapperOperation.mappingOperationDataSource = dataSource;
     self.mapperOperation.delegate = self.mapperDelegate;
+    self.mapperOperation.metadata = self.mappingMetadata;
     if (NSLocationInRange(self.response.statusCode, RKStatusCodeRangeForClass(RKStatusCodeClassSuccessful))) {
         self.mapperOperation.targetObject = self.targetObject;
     } else {
@@ -345,9 +361,13 @@ static inline NSManagedObjectID *RKObjectIDFromObjectIfManaged(id object)
     __block RKMappingResult *mappingResult = nil;
     self.operationQueue = [NSOperationQueue new];
     [self.managedObjectContext performBlockAndWait:^{
+        // We may have been cancelled before we made it onto the MOC's queue
+        if ([self isCancelled]) return;
+
         // Configure the mapper
         self.mapperOperation = [[RKMapperOperation alloc] initWithRepresentation:sourceObject mappingsDictionary:self.responseMappingsDictionary];
         self.mapperOperation.delegate = self.mapperDelegate;
+        self.mapperOperation.metadata = self.mappingMetadata;
         
         // Configure a data source to defer execution of connection operations until mapping is complete
         RKManagedObjectMappingOperationDataSource *dataSource = [[RKManagedObjectMappingOperationDataSource alloc] initWithManagedObjectContext:self.managedObjectContext
