@@ -24,7 +24,7 @@
 #import "RKEntityMapping.h"
 #import "RKLog.h"
 #import "RKManagedObjectCaching.h"
-#import "RKDynamicMappingMatcher.h"
+#import "RKObjectMappingMatcher.h"
 #import "RKErrors.h"
 #import "RKObjectUtilities.h"
 
@@ -32,7 +32,8 @@
 #undef RKLogComponent
 #define RKLogComponent RKlcl_cRestKitCoreData
 
-static id RKMutableSetValueForRelationship(NSRelationshipDescription *relationship)
+id RKMutableSetValueForRelationship(NSRelationshipDescription *relationship);
+id RKMutableSetValueForRelationship(NSRelationshipDescription *relationship)
 {
     if (! [relationship isToMany]) return nil;
     return [relationship isOrdered] ? [NSMutableOrderedSet orderedSet] : [NSMutableSet set];
@@ -70,7 +71,7 @@ static NSDictionary *RKConnectionAttributeValuesWithObject(RKConnectionDescripti
 
 @implementation RKRelationshipConnectionOperation
 
-- (instancetype)initWithManagedObject:(NSManagedObject *)managedObject
+- (id)initWithManagedObject:(NSManagedObject *)managedObject
                            connection:(RKConnectionDescription *)connection
                    managedObjectCache:(id<RKManagedObjectCaching>)managedObjectCache;
 {
@@ -162,7 +163,7 @@ static NSDictionary *RKConnectionAttributeValuesWithObject(RKConnectionDescripti
         if ([self.connection.relationship isToMany]) {
             connectionResult = managedObjects;
         } else {
-            if ([managedObjects count] > 1) RKLogWarning(@"Retrieved %ld objects satisfying connection criteria for one-to-one relationship connection: only object will be connected.", (long) [managedObjects count]);
+            if ([managedObjects count] > 1) RKLogWarning(@"Retrieved %ld objects satisfying connection criteria for one-to-one relationship connection: only one object will be connected.", (long) [managedObjects count]);
             if ([managedObjects count]) connectionResult = [managedObjects anyObject];
         }
     } else if ([self.connection isKeyPathConnection]) {
