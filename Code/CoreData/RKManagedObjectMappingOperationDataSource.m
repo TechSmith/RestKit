@@ -325,10 +325,17 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
         
         // Attempt to establish the connections and delete the object if its invalid once we are done
         NSOperationQueue *operationQueue = self.operationQueue ?: [NSOperationQueue currentQueue];
-        NSBlockOperation *deletionOperation = [NSBlockOperation blockOperationWithBlock:^{
-            RKDeleteInvalidNewManagedObject(mappingOperation.destinationObject);
-        }];
-        
+       NSBlockOperation *deletionOperation = [NSBlockOperation blockOperationWithBlock:^{
+          
+          // Fix possible crash per : https://github.com/RestKit/RestKit/issues/1251
+          [[(NSManagedObject *)mappingOperation.destinationObject managedObjectContext] performBlockAndWait:^{
+             RKDeleteInvalidNewManagedObject(mappingOperation.destinationObject);
+          }];
+          
+          
+       }];
+       
+       
         for (RKConnectionDescription *connection in connections) {
             RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:mappingOperation.destinationObject connection:connection managedObjectCache:self.managedObjectCache];
             [operation setConnectionBlock:^(RKRelationshipConnectionOperation *operation, id connectedValue) {
