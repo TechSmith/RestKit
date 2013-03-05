@@ -539,7 +539,7 @@ static NSString * const RKMetadataKeyPathPrefix = @"@metadata.";
     [subOperation start];
     
     if (subOperation.error) {
-        RKLogWarning(@"WARNING: Failed mapping nested object: %@", [error localizedDescription]);
+        RKLogWarning(@"WARNING: Failed mapping nested object: %@", [subOperation.error localizedDescription]);
     } else {
         [self addPropertyMappingToMappingInfo:relationshipMapping];
         
