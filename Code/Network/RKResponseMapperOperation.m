@@ -173,10 +173,10 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
       }
 
       
-      // CRASH for now, hopefully with more info in the console
-      NSParameterAssert(request);
-      NSParameterAssert(response);
-      NSParameterAssert(responseDescriptors);
+//      // CRASH for now, hopefully with more info in the console
+//      NSParameterAssert(request);
+//      NSParameterAssert(response);
+//      NSParameterAssert(responseDescriptors);
       
       return nil;
    }
