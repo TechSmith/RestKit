@@ -277,8 +277,13 @@ static NSSet *RKFlattenCollectionToSet(id collection)
 
 static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *responseDescriptors)
 {
-    NSCParameterAssert(URL);
-    NSCParameterAssert(responseDescriptors);
+   // TODO: to fix a crash during wakeup which was happening here when one of the params was null we don't param assert
+   if ( URL == nil || responseDescriptors == nil )
+   {
+      return nil;
+   }
+//    NSCParameterAssert(URL);
+//    NSCParameterAssert(responseDescriptors);
     NSArray *baseURLs = [responseDescriptors valueForKeyPath:@"@distinctUnionOfObjects.baseURL"];
     if ([baseURLs count] == 1) {
         NSURL *baseURL = [baseURLs objectAtIndex:0];
@@ -485,6 +490,13 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
     
     // Pass the fetch request blocks a relative `NSURL` object if possible
     NSURL *URL = RKRelativeURLFromURLAndResponseDescriptors(self.HTTPRequestOperation.response.URL, self.responseDescriptors);
+   
+   // TODO: to fix a crash during wakeup which was happening here we just return if the URL is nil
+   if (URL == nil )
+   {
+      return nil;
+   }
+   
     for (RKFetchRequestBlock fetchRequestBlock in [self.fetchRequestBlocks reverseObjectEnumerator]) {
         NSFetchRequest *fetchRequest = fetchRequestBlock(URL);
         if (fetchRequest) {
