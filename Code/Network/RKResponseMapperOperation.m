@@ -142,10 +142,45 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
                  data:(NSData *)data
   responseDescriptors:(NSArray *)responseDescriptors;
 {
-    NSParameterAssert(request);
-    NSParameterAssert(response);
-    NSParameterAssert(responseDescriptors);
-    
+
+   // TODO : sometimes upon waking up we get a crash down in restkit in the following parameter asserts
+   
+#if DEBUG
+   NSParameterAssert(request);
+   NSParameterAssert(response);
+   NSParameterAssert(responseDescriptors);
+#endif
+   
+   if ( request == nil || response == nil || responseDescriptors == nil )
+   {
+      NSLog(@"CRASH CRASH CRASH -- Preventing a crash");
+      
+      if ( request )
+      {
+         NSLog(@"CRASH CRASH CRASH -- Request - %@", request);
+      }
+      if ( response )
+      {
+         NSLog(@"CRASH CRASH CRASH -- Response - %@", response);
+      }
+      if ( data )
+      {
+         NSLog(@"CRASH CRASH CRASH -- Data - %@", data);
+      }
+      if ( responseDescriptors )
+      {
+         NSLog(@"CRASH CRASH CRASH -- ResponseDescriptors - %@", responseDescriptors );
+      }
+
+      
+      // CRASH for now, hopefully with more info in the console
+      NSParameterAssert(request);
+      NSParameterAssert(response);
+      NSParameterAssert(responseDescriptors);
+      
+      return nil;
+   }
+   
     self = [super init];
     if (self) {
         self.request = request;

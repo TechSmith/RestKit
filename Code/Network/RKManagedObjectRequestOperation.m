@@ -420,6 +420,14 @@ static NSURL *RKRelativeURLFromURLAndResponseDescriptors(NSURL *URL, NSArray *re
                                                                                           response:self.HTTPRequestOperation.response
                                                                                               data:self.HTTPRequestOperation.responseData
                                                                                responseDescriptors:self.responseDescriptors];
+   
+   // TODO : sometimes upon waking up we get a crash down in restkit in the parameter asserts in RKManagedObjectResponseMapperOperation's initWithRequest
+   // To fix that temporarily we just return nil vs. crashing
+   if ( self.responseMapperOperation == nil )
+   {
+      return nil;
+   }
+   
     self.responseMapperOperation.mapperDelegate = self;
     self.responseMapperOperation.mappingMetadata = self.mappingMetadata;
     self.responseMapperOperation.targetObject = self.targetObject;
