@@ -1,63 +1,39 @@
 require 'rubygems'
 require 'bundler/setup'
-require 'xcoder'
-require 'restkit/rake'
+require 'rakeup'
 require 'debugger'
 
-RestKit::Rake::ServerTask.new do |t|
+RakeUp::ServerTask.new do |t|
   t.port = 4567
   t.pid_file = 'Tests/Server/server.pid'
   t.rackup_file = 'Tests/Server/server.ru'
-  t.log_file = 'Tests/Server/server.log'
-
-  t.adapter(:thin) do |thin|
-    thin.config_file = 'Tests/Server/thin.yml'
-  end
+  t.server = :thin
 end
 
 namespace :test do
-  task :kill_simulator do
-    system(%q{killall -m -KILL "iPhone Simulator"})
+  desc "Run the unit tests for iOS"
+  task :ios do
+    $ios_success = system("xctool -workspace RestKit.xcworkspace -scheme RestKitTests test -test-sdk iphonesimulator")
   end
   
-  namespace :logic do
-    desc "Run the logic tests for iOS"
-    task :ios => :kill_simulator do
-      config = Xcode.workspace(:RestKit).scheme(:RestKitTests)
-      builder = config.builder
-      build_dir = File.dirname(config.parent.workspace_root) + '/Build'
-      builder.symroot = build_dir + '/Products'
-      builder.objroot = build_dir
-    	builder.test(:sdk => 'iphonesimulator')
-    end
-    
-    desc "Run the logic tests for OS X"
-    task :osx do
-      config = Xcode.workspace(:RestKit).scheme(:RestKitFrameworkTests)
-      builder = config.builder
-      build_dir = File.dirname(config.parent.workspace_root) + '/Build'
-      builder.symroot = build_dir + '/Products'
-      builder.objroot = build_dir
-    	builder.test(:sdk => 'macosx')
-    end
-  end    
-  
-  desc "Run the unit tests for iOS and OS X"
-  task :logic => ['logic:ios', 'logic:osx']
-  
-  desc "Run all tests for iOS and OS X"
-  task :all do
-    Rake.application.invoke_task("test:logic")
-    unit_status = $?.exitstatus
-    puts "\033[0;31m!! Unit Tests failed with exit status of #{unit_status}" if unit_status != 0
-    puts "\033[0;32m** All Tests executed successfully" if unit_status == 0 #&& integration_status == 0
+  desc "Run the unit tests for OS X"
+  task :osx do
+    $osx_success = system("xctool -workspace RestKit.xcworkspace -scheme RestKitFrameworkTests test -test-sdk macosx -sdk macosx")
   end
 end
 
 desc 'Run all the RestKit tests'
-task :test => "test:all"
+task :test => ['test:ios', 'test:osx'] do
+  puts "\033[0;31m!! iOS unit tests failed" unless $ios_success
+  puts "\033[0;31m!! OS X unit tests failed" unless $osx_success
+  if $ios_success && $osx_success
+    puts "\033[0;32m** All tests executed successfully"
+  else
+    exit(-1)
+  end
+end
 
-task :default => ["server:autostart", "test:all", "server:autostop"]
+task :default => ["server:autostart", :test, "server:autostop"]
 
 def restkit_version
   @restkit_version ||= ENV['VERSION'] || File.read("VERSION").chomp
@@ -129,8 +105,8 @@ namespace :docs do
   end
   
   desc "Build and publish the documentation set to the remote server (using rsync over SSH)"
-  task :publish, :version, :destination do |t, args|
-    args.with_defaults(:version => File.read("VERSION").chomp, :destination => "restkit.org:/var/www/public/restkit.org/public/api/")
+  task :publish, :version, :destination, :publish_feed do |t, args|
+    args.with_defaults(:version => File.read("VERSION").chomp, :destination => "restkit.org:/var/www/public/restkit.org/public/api/", :publish_feed => 'true')
     version = args[:version]
     destination = args[:destination]    
     puts "Generating RestKit docset for version #{version}..."
@@ -145,7 +121,8 @@ namespace :docs do
     command = "rsync -rvpPe ssh --delete Docs/API/html/ #{versioned_destination}"
     run(command)
     
-    if $?.exitstatus == 0
+    should_publish_feed = %{yes true 1}.include?(args[:publish_feed].downcase)
+    if $?.exitstatus == 0 && should_publish_feed
       command = "rsync -rvpPe ssh Docs/API/publish/* #{destination}"
       run(command)
     end
