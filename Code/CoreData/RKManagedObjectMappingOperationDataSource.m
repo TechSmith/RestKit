@@ -284,7 +284,8 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
 
     if (managedObject == nil) {
         managedObject = [[NSManagedObject alloc] initWithEntity:entity insertIntoManagedObjectContext:self.managedObjectContext];
-        [managedObject setValuesForKeysWithDictionary:entityIdentifierAttributes];
+        [managedObject setValuesForKeysWithDictionary:entityIdentifierAttributes];        
+        if (entityMapping.persistentStore) [self.managedObjectContext assignObject:managedObject toPersistentStore:entityMapping.persistentStore];
 
         if ([self.managedObjectCache respondsToSelector:@selector(didCreateObject:)]) {
             [self.managedObjectCache didCreateObject:managedObject];
@@ -313,9 +314,10 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
 - (BOOL)commitChangesForMappingOperation:(RKMappingOperation *)mappingOperation error:(NSError **)error
 {
     if ([mappingOperation.objectMapping isKindOfClass:[RKEntityMapping class]]) {
-        [self emitDeadlockWarningIfNecessary];                
+        [self emitDeadlockWarningIfNecessary];
         
-        NSArray *connections = [(RKEntityMapping *)mappingOperation.objectMapping connections];
+        RKEntityMapping *entityMapping = (RKEntityMapping *)mappingOperation.objectMapping;
+        NSArray *connections = [entityMapping connections];
         if ([connections count] > 0 && self.managedObjectCache == nil) {
             NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: @"Cannot map an entity mapping that contains connection mappings with a data source whose managed object cache is nil." };
             NSError *localError = [NSError errorWithDomain:RKErrorDomain code:RKMappingErrorNilManagedObjectCache userInfo:userInfo];
@@ -330,18 +332,18 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
          */
         NSOperationQueue *operationQueue = self.operationQueue ?: [NSOperationQueue currentQueue];
         __weak NSManagedObjectContext *weakContext = [(NSManagedObject *)mappingOperation.destinationObject managedObjectContext];
-        NSBlockOperation *deletionOperation = [NSBlockOperation blockOperationWithBlock:^{
+        NSBlockOperation *deletionOperation = entityMapping.discardsInvalidObjectsOnInsert ? [NSBlockOperation blockOperationWithBlock:^{
             [weakContext performBlockAndWait:^{
                 RKDeleteInvalidNewManagedObject(mappingOperation.destinationObject);
             }];
-        }];
+        }] : nil;
         
         // Add a dependency on the parent operation. If we are being mapped as part of a relationship, then the assignment of the mapped object to a parent may well fulfill the validation requirements. This ensures that the relationship mapping has completed before we evaluate the object for deletion.
         if (self.parentOperation) [deletionOperation addDependency:self.parentOperation];
 
-        for (RKConnectionDescription *connection in connections) {
-            RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:mappingOperation.destinationObject connection:connection managedObjectCache:self.managedObjectCache];
-            [operation setConnectionBlock:^(RKRelationshipConnectionOperation *operation, id connectedValue) {
+        if ([connections count]) {
+            RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:mappingOperation.destinationObject connections:connections managedObjectCache:self.managedObjectCache];
+            [operation setConnectionBlock:^(RKRelationshipConnectionOperation *operation, RKConnectionDescription *connection, id connectedValue) {
                 if (connectedValue) {
                     if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didConnectRelationship:toValue:usingConnection:)]) {
                         [mappingOperation.delegate mappingOperation:mappingOperation didConnectRelationship:connection.relationship toValue:connectedValue usingConnection:connection];
@@ -352,6 +354,7 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
                     }
                 }
             }];
+            
             if (self.parentOperation) [operation addDependency:self.parentOperation];
             [deletionOperation addDependency:operation];
             [operationQueue addOperation:operation];
@@ -441,6 +444,33 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
     }
     
     return YES;
+}
+
+- (BOOL)mappingOperation:(RKMappingOperation *)mappingOperation shouldSetUnchangedValuesForObject:(id)object
+{
+    // Only new objects should have a temporary ID
+    if ([object isKindOfClass:[NSManagedObject class]] && [[(NSManagedObject *)object objectID] isTemporaryID]) {
+        return YES;
+    }
+    else return NO;
+}
+
+- (BOOL)mappingOperationShouldSkipPropertyMapping:(RKMappingOperation *)mappingOperation
+{
+    if (! [mappingOperation.mapping isKindOfClass:[RKEntityMapping class]]) return NO;
+    RKEntityMapping *entityMapping = (RKEntityMapping *)mappingOperation.mapping;
+    NSString *modificationKey = [entityMapping modificationKey];
+    if (! modificationKey) return NO;
+    id currentValue = [mappingOperation.destinationObject valueForKey:modificationKey];
+    if (! currentValue) return NO;
+    
+    RKPropertyMapping *propertyMappingForModificationKey = [[(RKEntityMapping *)mappingOperation.mapping propertyMappingsByDestinationKeyPath] objectForKey:modificationKey];
+    id rawValue = [[mappingOperation sourceObject] valueForKeyPath:propertyMappingForModificationKey.sourceKeyPath];    
+    RKDateToStringValueTransformer *transformer = [[RKDateToStringValueTransformer alloc] initWithDateToStringFormatter:entityMapping.preferredDateFormatter stringToDateFormatters:entityMapping.dateFormatters];
+    Class attributeClass = [entityMapping classForProperty:propertyMappingForModificationKey.destinationKeyPath];
+    id transformedValue = RKTransformedValueWithClass(rawValue, attributeClass, transformer);
+    if (! transformedValue) return NO;
+    return RKObjectIsEqualToObject(transformedValue, currentValue);
 }
 
 @end
