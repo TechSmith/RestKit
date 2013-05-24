@@ -507,6 +507,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  @see `requestWithObject:method:path:parameters`
  */
 - (id)appropriateObjectRequestOperationWithObject:(id)object
+                                          withMOC:(NSManagedObjectContext*)moc
                                            method:(RKRequestMethod)method
                                              path:(NSString *)path
                                        parameters:(NSDictionary *)parameters;
