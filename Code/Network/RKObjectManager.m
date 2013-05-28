@@ -582,7 +582,7 @@ static NSString *RKMIMETypeFromAFHTTPClientParameterEncoding(AFHTTPClientParamet
        NSManagedObjectContext *managedObjectContext = nil;
        if ( moc != nil )
        {
-          managedObjectContext = nil;
+          managedObjectContext = moc;
        }
        else
        {
